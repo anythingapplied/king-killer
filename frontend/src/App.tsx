@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
+        defeatFlight, disconnectNotice, dismissNotice,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
     } = useGameLogic();
@@ -23,6 +24,15 @@ const App: React.FC = () => {
                 >
                     KING KILLER
                 </motion.h1>
+                {disconnectNotice && (
+                    <div className="mb-6 w-full max-w-md bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 flex items-start gap-3">
+                        <div className="flex-1 text-left">
+                            <div className="text-amber-400 font-black uppercase tracking-widest text-xs mb-1">Connection Lost</div>
+                            <div className="text-slate-200 text-sm leading-relaxed">{disconnectNotice}</div>
+                        </div>
+                        <button onClick={dismissNotice} className="shrink-0 text-slate-400 hover:text-white text-xl font-black leading-none px-2" aria-label="Dismiss">×</button>
+                    </div>
+                )}
                 <div className="bg-slate-800 p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700">
                     <h2 className="text-xl font-bold mb-6 text-slate-300">New Game</h2>
                     <div className="grid grid-cols-2 gap-4 mb-10">
@@ -38,7 +48,7 @@ const App: React.FC = () => {
                     </div>
                     <input 
                         type="text" 
-                        placeholder="PASTE GAME ID" 
+                        placeholder="PASTE GAME LINK" 
                         className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-5 px-4 text-center font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase text-lg" 
                         onKeyDown={(e) => { if (e.key === 'Enter') joinGame(e.currentTarget.value.trim()); }} 
                     />
@@ -67,6 +77,7 @@ const App: React.FC = () => {
                 gameState={localGameState}
                 copySuccess={copySuccess}
                 activeEffects={activeEffects}
+                defeatFlight={defeatFlight}
                 onMenuClick={exitToMenu}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
@@ -76,6 +87,7 @@ const App: React.FC = () => {
             <Arena 
                 gameState={localGameState}
                 activeEffects={activeEffects}
+                defeatFlight={defeatFlight}
                 isImmuneWarning={isImmuneWarning}
                 isDiscarding={isDiscarding}
             />

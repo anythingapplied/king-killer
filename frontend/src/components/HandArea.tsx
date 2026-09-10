@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Card as CardType, Suit, TurnPhase } from '../types';
+import { isSelectionValid } from '../gameLogic';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -18,33 +19,6 @@ interface HandAreaProps {
     currentPlayerIndex: number;
     discardRemaining: number;
 }
-
-const getAttackValue = (card: CardType): number => {
-    const rank = card.rank;
-    if (typeof rank === 'object') return rank.Number;
-    if (rank === 'Ace') return 1;
-    if (rank === 'Jack') return 10;
-    if (rank === 'Queen') return 15;
-    if (rank === 'King') return 20;
-    return 0;
-};
-
-const isSelectionValid = (newCard: CardType, currentSelection: CardType[], phase: TurnPhase): boolean => {
-    const isJoker = (c: CardType) => c.rank === 'Joker';
-    const isAce = (c: CardType) => c.rank === 'Ace';
-    if (typeof phase === 'object' && 'AwaitingDiscard' in phase) {
-        return currentSelection.reduce((sum, c) => sum + getAttackValue(c), 0) < (phase as any).AwaitingDiscard.damage_to_take;
-    }
-    if (currentSelection.length === 0) return true;
-    if (isJoker(newCard) || currentSelection.some(isJoker)) return false;
-    if (currentSelection.some(isAce) || isAce(newCard)) return currentSelection.length === 1;
-    const allSameRank = currentSelection.every(c => JSON.stringify(c.rank) === JSON.stringify(newCard.rank));
-    if (allSameRank) {
-        const newTotal = currentSelection.reduce((sum, c) => sum + getAttackValue(c), 0) + getAttackValue(newCard);
-        return newTotal <= 10 && currentSelection.length < 4;
-    }
-    return false;
-};
 
 const HandArea: React.FC<HandAreaProps> = ({ 
     sortedHand, maxHandSize, isMyTurn, selectedIndices, 
@@ -81,10 +55,10 @@ const HandArea: React.FC<HandAreaProps> = ({
                                 <motion.div 
                                     key={item.card.id} 
                                     layoutId={`hand-slot-${item.card.id}`}
-                                    initial={{ y: -600, x: -200, opacity: 0, scale: 0.5 }} 
+                                    initial={{ y: -350, x: -120, opacity: 0, scale: 0.7 }} 
                                     animate={{ y: 0, x: 0, opacity: 1, scale: 1 }} 
                                     exit={{ y: 100, opacity: 0, scale: 0.8 }}
-                                    transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                                    transition={{ type: 'spring', stiffness: 420, damping: 36 }}
                                     className="relative flex-shrink-0 h-full flex items-end"
                                 >
                                     <Card 

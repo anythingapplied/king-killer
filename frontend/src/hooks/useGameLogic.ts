@@ -1,31 +1,22 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import type { GameState, GameAction, Card as CardType, Rank as RankType, Suit as SuitType, CombatEffect } from '../types';
+import type { GameState, GameAction, Card as CardType, CombatEffect } from '../types';
+import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
 
 const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 const API_BASE = import.meta.env.VITE_API_BASE ?? (IS_LOCAL ? `http://${window.location.hostname}:3000` : '');
 const WS_BASE = import.meta.env.VITE_WS_BASE ?? (IS_LOCAL ? `ws://${window.location.hostname}:3000` : '');
 
-const suitOrder: SuitType[] = ['Clubs', 'Hearts', 'Spades', 'Diamonds'];
+// Timings for the defeat flow (in ms). The card must be shown long enough for
+// the killing blow to land before it flies off to its pile.
+const DEFEAT_BLOW_MS = 450;
+const DEFEAT_FLIGHT_MS = 650;
 
-const getRankValue = (rank: RankType): number => {
-    if (typeof rank === 'object') return rank.Number;
-    if (rank === 'Ace') return 1;
-    if (rank === 'Jack') return 11;
-    if (rank === 'Queen') return 12;
-    if (rank === 'King') return 13;
-    if (rank === 'Joker') return 0;
-    return 0;
-};
-
-const getAttackValue = (card: CardType): number => {
-    const rank = card.rank;
-    if (typeof rank === 'object') return rank.Number;
-    if (rank === 'Ace') return 1;
-    if (rank === 'Jack') return 10;
-    if (rank === 'Queen') return 15;
-    if (rank === 'King') return 20;
-    return 0;
-};
+export interface DefeatFlight {
+    id: number; // also used as the framer-motion layoutId shared with the HUD target
+    card: CardType;
+    dest: 'tavern' | 'discard';
+    flying: boolean; // true once the swap has committed and the card can fly
+}
 
 export const useGameLogic = () => {
   const [gameId, setGameId] = useState<string | null>(null);
@@ -36,42 +27,100 @@ export const useGameLogic = () => {
   const [copySuccess, setCopySuccess] = useState(false);
   const [showGameOver, setShowGameOver] = useState(true);
   const [activeEffects, setActiveEffects] = useState<CombatEffect[]>([]);
+  const [defeatFlight, setDefeatFlight] = useState<DefeatFlight | null>(null);
+  const [disconnectNotice, setDisconnectNotice] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
+  const gameConnectedRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
+  const shuttingDownRef = useRef(false);
+
+  const persistNotice = (message: string) => {
+    setDisconnectNotice(message);
+    sessionStorage.setItem('kingkiller_disconnect_notice', message);
+  };
+
+  const dismissNotice = () => {
+    setDisconnectNotice(null);
+    sessionStorage.removeItem('kingkiller_disconnect_notice');
+  };
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem('kingkiller_disconnect_notice');
+    if (saved) setDisconnectNotice(saved);
+  }, []);
 
   useEffect(() => {
     if (!gameState) return;
-    if (localGameState) {
+    const prev = localGameState;
+    if (prev) {
         const effects: CombatEffect[] = [];
         const ts = Date.now();
-        if (gameState.active_enemy && localGameState.active_enemy) {
-            const damage = localGameState.active_enemy.current_health - gameState.active_enemy.current_health;
+        const enemyChanged = prev.active_enemy && gameState.active_enemy && prev.active_enemy.card.id !== gameState.active_enemy.card.id;
+        if (enemyChanged && prev.active_enemy) {
+            // An enemy was just defeated (a new one appeared). Show the killing blow
+            // over the old enemy's health before it flies away.
+            const blow = calculateBlowDamage(gameState.last_played ?? [], prev.active_enemy);
+            if (blow > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${blow}`, type: 'damage' });
+        } else if (gameState.active_enemy && prev.active_enemy) {
+            const damage = prev.active_enemy.current_health - gameState.active_enemy.current_health;
             if (damage > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${damage}`, type: 'damage' });
         }
-        if (gameState.shield_value > localGameState.shield_value) {
-            effects.push({ id: ts + 2, suit: 'Spades', value: `+${gameState.shield_value - localGameState.shield_value}`, type: 'shield' });
+        if (gameState.shield_value > prev.shield_value) {
+            effects.push({ id: ts + 2, suit: 'Spades', value: `+${gameState.shield_value - prev.shield_value}`, type: 'shield' });
         }
-        if (gameState.tavern_deck.length > localGameState.tavern_deck.length && gameState.discard_pile.length < localGameState.discard_pile.length) {
-            effects.push({ id: ts + 3, suit: 'Hearts', value: `+${gameState.tavern_deck.length - localGameState.tavern_deck.length}`, type: 'heal' });
+        if (gameState.tavern_deck.length > prev.tavern_deck.length && gameState.discard_pile.length < prev.discard_pile.length) {
+            effects.push({ id: ts + 3, suit: 'Hearts', value: `+${gameState.tavern_deck.length - prev.tavern_deck.length}`, type: 'heal' });
         }
         const isJester = gameState.last_played?.some(c => c.rank === 'Joker');
         const totalHand = (gs: GameState) => gs.players.reduce((sum, p) => sum + p.hand.length, 0);
-        if (!isJester && totalHand(gameState) > totalHand(localGameState)) {
-            effects.push({ id: ts + 4, suit: 'Diamonds', value: `+${totalHand(gameState) - totalHand(localGameState)}`, type: 'draw' });
+        if (!isJester && totalHand(gameState) > totalHand(prev)) {
+            effects.push({ id: ts + 4, suit: 'Diamonds', value: `+${totalHand(gameState) - totalHand(prev)}`, type: 'draw' });
         }
         if (effects.length > 0) {
-            setActiveEffects(prev => [...prev, ...effects]);
-            setTimeout(() => setActiveEffects(prev => prev.filter(e => !effects.find(ne => ne.id === e.id))), 1200);
+            setActiveEffects(prevEffects => [...prevEffects, ...effects]);
+            setTimeout(() => setActiveEffects(prevEffects => prevEffects.filter(e => !effects.find(ne => ne.id === e.id))), 1200);
         }
     }
-    const isDefeat = localGameState?.active_enemy && !gameState.active_enemy;
-    const isNext = localGameState?.active_enemy && gameState.active_enemy && JSON.stringify(localGameState.active_enemy.card) !== JSON.stringify(gameState.active_enemy.card);
-    if (isDefeat || isNext) {
-        const timer = setTimeout(() => setLocalGameState(gameState), 1200);
+    
+    const isDefeat = prev?.active_enemy && !gameState.active_enemy;
+    const isEnemySwap = prev?.active_enemy && gameState.active_enemy && prev.active_enemy.card.id !== gameState.active_enemy.card.id;
+
+    if (isDefeat) {
+        // Win over the final king: no next enemy, so there is nothing to fly to.
+        const timer = setTimeout(() => {
+            setLocalGameState(gameState);
+            if (gameState.status !== 'InProgress') setShowGameOver(true);
+        }, DEFEAT_BLOW_MS);
         return () => clearTimeout(timer);
-    } else {
-        setLocalGameState(gameState);
-        if (gameState.status !== 'InProgress') setShowGameOver(true);
     }
+
+    if (isEnemySwap) {
+        // A defeat: hold the killing blow briefly, swap states, then let the
+        // defeated card (now mounted in the HUD as a mini placeholder with the
+        // same layoutId) fly to its pile.
+        const flight: DefeatFlight = {
+            id: Date.now(),
+            card: prev!.active_enemy!.card,
+            dest: gameState.last_enemy_fate === 'Tavern' ? 'tavern' : 'discard',
+            flying: false,
+        };
+        setDefeatFlight(flight);
+        const swapTimer = setTimeout(() => {
+            setLocalGameState(gameState);
+            setDefeatFlight(f => (f?.id === flight.id ? { ...f, flying: true } : f));
+            if (gameState.status !== 'InProgress') setShowGameOver(true);
+        }, DEFEAT_BLOW_MS);
+        const clearTimer = setTimeout(() => {
+            setDefeatFlight(f => (f?.id === flight.id ? null : f));
+        }, DEFEAT_BLOW_MS + DEFEAT_FLIGHT_MS);
+        return () => {
+            clearTimeout(swapTimer);
+            clearTimeout(clearTimer);
+        };
+    }
+
+    setLocalGameState(gameState);
+    if (gameState.status !== 'InProgress') setShowGameOver(true);
   }, [gameState]);
 
   useEffect(() => {
@@ -89,10 +138,50 @@ export const useGameLogic = () => {
 
   useEffect(() => {
     if (gameId) {
-      ws.current = new WebSocket(`${WS_BASE}/api/ws/${gameId}`);
-      ws.current.onmessage = (event) => setGameState(JSON.parse(event.data));
-      return () => ws.current?.close();
+      gameConnectedRef.current = false;
+      intentionalCloseRef.current = false;
+      shuttingDownRef.current = false;
+      const socket = new WebSocket(`${WS_BASE}/api/ws/${gameId}`);
+      ws.current = socket;
+      socket.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg && msg.type === 'Shutdown') {
+          shuttingDownRef.current = true;
+          persistNotice(msg.payload?.reason ?? 'The server went to sleep. Start a new game to play again.');
+          socket.close();
+          exitToMenu();
+          return;
+        }
+        if (msg && msg.type === 'State') {
+          gameConnectedRef.current = true;
+          setGameState(msg.payload);
+          return;
+        }
+        setGameState(msg);
+      };
+      socket.onclose = () => {
+        if (!intentionalCloseRef.current && !shuttingDownRef.current) {
+          persistNotice('Connection lost. The server is asleep or restarting. Start a new game to play again.');
+          exitToMenu();
+        }
+      };
+      return () => {
+        intentionalCloseRef.current = true;
+        socket.close();
+        if (ws.current === socket) ws.current = null;
+      };
     }
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!gameId) return;
+    const interval = setInterval(() => {
+      if (shuttingDownRef.current) return;
+      if (ws.current?.readyState === WebSocket.OPEN && gameConnectedRef.current) {
+        ws.current.send(JSON.stringify({ type: 'Ping' }));
+      }
+    }, 30000);
+    return () => clearInterval(interval);
   }, [gameId]);
 
   const sortedHand = useMemo(() => {
@@ -143,6 +232,7 @@ export const useGameLogic = () => {
   }, [selectedIndices, localGameState, myPlayerId]);
 
   const createGame = async (numPlayers: number) => {
+    dismissNotice();
     const res = await fetch(`${API_BASE}/api/game`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -151,13 +241,44 @@ export const useGameLogic = () => {
     const data = await res.json();
     setGameId(data.id); setGameState(data.state); setMyPlayerId(0);
     localStorage.setItem(`seat_${data.id}`, "0");
+    setUrlGameId(data.id);
   };
 
-  const joinGame = async (id: string) => {
-    const cleanId = id.trim().toLowerCase();
-    const res = await fetch(`${API_BASE}/api/game/${cleanId}`);
-    if (res.ok) setGameId(cleanId); else alert("Game not found");
+  const setUrlGameId = (id: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('game', id);
+    window.history.replaceState(null, '', url);
   };
+
+  const clearUrlGameId = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('game');
+    window.history.replaceState(null, '', url);
+  };
+
+  const joinGame = async (input: string) => {
+    const cleanId = input.trim().toUpperCase();
+    let id = cleanId;
+    if (cleanId.startsWith('HTTP')) {
+      const params = new URLSearchParams(new URL(cleanId).search);
+      id = params.get('game')?.toUpperCase() ?? '';
+    }
+    const res = await fetch(`${API_BASE}/api/game/${id}`);
+    if (res.ok) {
+      dismissNotice();
+      setGameId(id);
+      setUrlGameId(id);
+    } else {
+      alert("Game not found");
+    }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gameParam = params.get('game')?.toUpperCase();
+    if (gameParam) joinGame(gameParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const sendAction = (action: GameAction) => {
     ws.current?.send(JSON.stringify(action));
@@ -176,38 +297,24 @@ export const useGameLogic = () => {
     }
   };
 
-  const isSelectionValid = (newCard: CardType, currentSelection: CardType[], phase: string | object): boolean => {
-    const isJoker = (c: CardType) => c.rank === 'Joker';
-    const isAce = (c: CardType) => c.rank === 'Ace';
-    if (typeof phase === 'object' && 'AwaitingDiscard' in phase) {
-        return currentSelection.reduce((sum, c) => sum + getAttackValue(c), 0) < (phase as any).AwaitingDiscard.damage_to_take;
-    }
-    if (currentSelection.length === 0) return true;
-    if (isJoker(newCard) || currentSelection.some(isJoker)) return false;
-    if (currentSelection.some(isAce) || isAce(newCard)) return currentSelection.length === 1;
-    const allSameRank = currentSelection.every(c => JSON.stringify(c.rank) === JSON.stringify(newCard.rank));
-    if (allSameRank) {
-        const newTotal = currentSelection.reduce((sum, c) => sum + getAttackValue(c), 0) + getAttackValue(newCard);
-        return newTotal <= 10 && currentSelection.length < 4;
-    }
-    return false;
-  };
-
   const copyId = () => {
     if (gameId) {
-      navigator.clipboard.writeText(gameId);
+      navigator.clipboard.writeText(`${window.location.origin}?game=${gameId}`);
       setCopySuccess(true); setTimeout(() => setCopySuccess(false), 2000);
     }
   };
 
   const exitToMenu = () => {
+    clearUrlGameId();
     setGameId(null); setGameState(null); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
+    setDefeatFlight(null);
   };
 
   const restartTable = () => { sendAction({ type: 'Reset' }); setShowGameOver(false); };
 
   return {
     gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
+    defeatFlight, disconnectNotice, dismissNotice,
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
     createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
   };

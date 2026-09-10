@@ -1,5 +1,6 @@
 import React from 'react';
 import type { GameState, CombatEffect } from '../types';
+import type { DefeatFlight } from '../hooks/useGameLogic';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -9,13 +10,14 @@ interface HUDProps {
     gameState: GameState;
     copySuccess: boolean;
     activeEffects: CombatEffect[];
+    defeatFlight: DefeatFlight | null;
     onMenuClick: () => void;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
 }
 
 const HUD: React.FC<HUDProps> = ({ 
-    gameId, myPlayerId, gameState, copySuccess, activeEffects,
+    myPlayerId, gameState, copySuccess, activeEffects, defeatFlight,
     onMenuClick, onCopyIdClick, onSoloJesterClick 
 }) => {
     const isSolo = gameState.players.length === 1;
@@ -27,13 +29,18 @@ const HUD: React.FC<HUDProps> = ({
         gameState.castle_deck.filter(c => JSON.stringify(c.rank) === JSON.stringify(gameState.active_enemy?.card.rank))
         : [];
 
+    // While the defeated card flies between the board and its pile, mount a
+    // mini card at the destination carrying the same layoutId so framer-motion
+    // animates the flight.
+    const flyingTo = defeatFlight?.flying ? defeatFlight.dest : null;
+
     return (
         <div data-testid="hud" className="z-[100] bg-slate-800/90 p-2 rounded-xl shadow-2xl border border-slate-700/50 backdrop-blur-md relative max-w-2xl mx-auto w-full flex-shrink-0">
             <div className="flex justify-between items-center px-1 mb-1">
                 <button onClick={onMenuClick} className="bg-slate-700 text-[8px] font-black px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
                 <div className="bg-blue-600 text-[9px] font-black px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl uppercase tracking-widest whitespace-nowrap">Player {myPlayerId + 1}</div>
                 <button onClick={onCopyIdClick} className={`flex items-center gap-1 px-3 py-1 rounded-full border text-[8px] font-mono transition-all ${copySuccess ? 'bg-green-900/40 border-green-500 text-green-300' : 'bg-slate-950 border-slate-800'}`}>
-                    {copySuccess ? 'Copied!' : `${gameId.slice(0, 4)}...${gameId.slice(-4)}`}
+                    {copySuccess ? 'Copied!' : `🔗 Share`}
                 </button>
             </div>
 
@@ -42,6 +49,18 @@ const HUD: React.FC<HUDProps> = ({
                     <div className="text-[7px] uppercase tracking-wider text-green-400 font-black">Tavern</div>
                     <div className="text-lg font-black leading-none">🍺 {gameState.tavern_deck.length}</div>
                     <AnimatePresence>
+                        {flyingTo === 'tavern' && defeatFlight && (
+                            <motion.div
+                                initial={{ scale: 1, opacity: 1 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                layoutId={String(defeatFlight.id)}
+                                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                                className="pointer-events-none"
+                            >
+                                <Card card={defeatFlight.card} className="w-7 h-10 shadow-2xl" />
+                            </motion.div>
+                        )}
                         {activeEffects.filter(e => e.type === 'heal').map(e => (
                             <motion.span key={e.id} initial={{ y: 0, opacity: 1 }} animate={{ y: -30, opacity: 0 }} exit={{ opacity: 0 }} className="absolute inset-x-0 -top-4 text-xs text-green-400 font-black">{e.value}</motion.span>
                         ))}
@@ -55,9 +74,23 @@ const HUD: React.FC<HUDProps> = ({
                     </div>
                 </div>
 
-                <div className="text-center w-16">
+                <div className="text-center w-16 relative">
                     <div className="text-[7px] uppercase tracking-wider text-slate-400 font-black">Discard</div>
                     <div className="text-xl font-black leading-none">🗑️ {gameState.discard_pile.length}</div>
+                    <AnimatePresence>
+                        {flyingTo === 'discard' && defeatFlight && (
+                            <motion.div
+                                initial={{ scale: 1, opacity: 1 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                layoutId={String(defeatFlight.id)}
+                                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                                className="pointer-events-none"
+                            >
+                                <Card card={defeatFlight.card} className="w-7 h-10 shadow-2xl" />
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
                 </div>
             </div>
 

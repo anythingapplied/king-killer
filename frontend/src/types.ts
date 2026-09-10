@@ -46,6 +46,9 @@ export type GameStatus =
     | 'Won'
     | { Lost: string };
 
+/** How the last defeated enemy card was resolved (serialized from the Rust enum). */
+export type EnemyFate = 'Tavern' | 'Discard';
+
 export interface GameState {
     players: Player[];
     current_player_index: number;
@@ -61,6 +64,7 @@ export interface GameState {
     phase: TurnPhase;
     solo_jesters: number;
     max_hand_size: number;
+    last_enemy_fate: EnemyFate | null;
 }
 
 export type GameAction = 

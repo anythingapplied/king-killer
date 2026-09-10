@@ -13,14 +13,13 @@
     pkgs.pkg-config
     pkgs.openssl
     pkgs.gcc
+    pkgs.flyctl
     pkgs.playwright-driver.browsers
   ];
 
   env = {
     PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
     PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
-    # Dynamically find the chromium path provided by nixpkgs
-    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH = "${pkgs.playwright-driver.browsers}/chromium-1208/chrome-linux64/chrome";
   };
 
   # https://devenv.sh/scripts/
@@ -28,6 +27,9 @@
 
   enterShell = ''
     hello
+    # The chromium revision in the nixpkgs playwright driver bumps over time, so
+    # resolve it dynamically instead of hardcoding a version number.
+    export PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH="$(echo ${pkgs.playwright-driver.browsers}/chromium-*/chrome-linux64/chrome | awk '{print $1}')"
   '';
 
   # https://devenv.sh/pre-commit-hooks/

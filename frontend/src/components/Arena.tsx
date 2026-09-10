@@ -1,16 +1,18 @@
 import React from 'react';
 import type { GameState, CombatEffect } from '../types';
+import type { DefeatFlight } from '../hooks/useGameLogic';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface ArenaProps {
     gameState: GameState;
     activeEffects: CombatEffect[];
+    defeatFlight: DefeatFlight | null;
     isImmuneWarning: boolean;
     isDiscarding: boolean;
 }
 
-const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding }) => {
+const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, defeatFlight, isImmuneWarning, isDiscarding }) => {
     // Only show warning if not in discard phase
     const showWarning = isImmuneWarning && !isDiscarding;
 
@@ -44,10 +46,10 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                     <>
                         <motion.div 
                             key={gameState.active_enemy.card.id} 
-                            initial={{ scale: 0.9, y: 20, opacity: 0 }} 
-                            animate={{ scale: 1, y: 0, opacity: 1 }} 
-                            exit={{ x: 500, opacity: 0, rotate: 10 }} 
-                            transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+                            initial={{ opacity: 0, y: -40, scale: 0.96 }} 
+                            animate={{ opacity: 1, y: 0, scale: 1 }} 
+                            transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+                            layoutId={defeatFlight && !defeatFlight.flying ? String(defeatFlight.id) : undefined}
                             className="relative h-[70%] max-h-[40vh] group"
                         >
                             <div className="absolute inset-0 bg-red-500/20 blur-[60px] rounded-full scale-150 -z-10 group-hover:bg-red-500/30 transition-colors duration-500"></div>

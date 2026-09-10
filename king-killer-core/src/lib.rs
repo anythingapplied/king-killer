@@ -120,6 +120,14 @@ pub enum GameStatus {
     Lost(String), // Reason for loss
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum EnemyFate {
+    /// Damage exactly equal to the enemy's health: card goes to the Tavern deck.
+    Tavern,
+    /// Overkill: card goes to the Discard pile.
+    Discard,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub players: Vec<Player>,
@@ -136,6 +144,9 @@ pub struct GameState {
     pub phase: TurnPhase,
     pub solo_jesters: u32,
     pub max_hand_size: usize,
+    /// How the most recently defeated enemy card was resolved, used for
+    /// client-side defeat animations. `None` until an enemy has been defeated.
+    pub last_enemy_fate: Option<EnemyFate>,
 }
 
 impl GameState {
@@ -231,6 +242,7 @@ impl GameState {
             phase: TurnPhase::AwaitingPlay,
             solo_jesters,
             max_hand_size,
+            last_enemy_fate: None,
         };
 
         state.next_enemy();
@@ -359,6 +371,7 @@ impl GameState {
         if enemy_defeated {
             let enemy = self.active_enemy.take().unwrap();
             let exact_kill = enemy.current_health == 0;
+            self.last_enemy_fate = Some(if exact_kill { EnemyFate::Tavern } else { EnemyFate::Discard });
             if exact_kill {
                 self.tavern_deck.push(enemy.card);
             } else {
