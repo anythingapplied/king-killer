@@ -11,11 +11,20 @@ const WS_BASE = import.meta.env.VITE_WS_BASE ?? (IS_LOCAL ? `ws://${window.locat
 const DEFEAT_BLOW_MS = 450;
 const DEFEAT_FLIGHT_MS = 650;
 
+export interface FlightBox {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+
 export interface DefeatFlight {
-    id: number; // also used as the framer-motion layoutId shared with the HUD target
+    id: number; // uniquely identifies this defeat
     card: CardType;
     dest: 'tavern' | 'discard';
-    flying: boolean; // true once the swap has committed and the card can fly
+    flying: boolean; // true once the card can fly (from/to measured)
+    from?: FlightBox; // screen rect of the defeated enemy
+    to?: FlightBox; // screen rect the card lands on
 }
 
 export const useGameLogic = () => {
@@ -42,6 +51,13 @@ export const useGameLogic = () => {
   const dismissNotice = () => {
     setDisconnectNotice(null);
     sessionStorage.removeItem('kingkiller_disconnect_notice');
+  };
+
+  // Commit the server state that a defeat's in-flight card just landed at.
+  const finishDefeatFlight = (flightId?: number) => {
+    setDefeatFlight(f => (flightId !== undefined && f?.id !== flightId ? f : null));
+    if (gameState) setLocalGameState(gameState);
+    if (gameState?.status !== 'InProgress') setShowGameOver(true);
   };
 
   useEffect(() => {
@@ -95,9 +111,11 @@ export const useGameLogic = () => {
     }
 
     if (isEnemySwap) {
-        // A defeat: hold the killing blow briefly, swap states, then let the
-        // defeated card (now mounted in the HUD as a mini placeholder with the
-        // same layoutId) fly to its pile.
+        // A defeat: hold the killing blow briefly, then let the defeated card
+        // (rendered as a full-screen overlay in App) fly from the enemy's rect
+        // to the destination pile's rect. The local state swap waits for the
+        // card to land, so the board keeps showing the old (defeated) enemy
+        // until the flight commits.
         const flight: DefeatFlight = {
             id: Date.now(),
             card: prev!.active_enemy!.card,
@@ -106,21 +124,34 @@ export const useGameLogic = () => {
         };
         setDefeatFlight(flight);
         const swapTimer = setTimeout(() => {
-            setLocalGameState(gameState);
-            setDefeatFlight(f => (f?.id === flight.id ? { ...f, flying: true } : f));
-            if (gameState.status !== 'InProgress') setShowGameOver(true);
+            // The defeated enemy is still mounted right now, and the pile slots
+            // are always present, so we can measure both and drive a plain
+            // animated flight that does not depend on layoutId projection.
+            const enemyEl = document.querySelector('[data-testid="enemy-card"]');
+            const destEl = document.querySelector(flight.dest === 'tavern' ? '[data-testid="tavern-slot"]' : '[data-testid="discard-slot"]');
+            const from = enemyEl?.getBoundingClientRect();
+            const to = destEl?.getBoundingClientRect();
+            setDefeatFlight(f => (f?.id === flight.id ? {
+                ...f,
+                flying: true,
+                from: from ? { x: from.x, y: from.y, width: from.width, height: from.height } : undefined,
+                to: to ? { x: to.x + to.width / 2 - 14, y: to.y + to.height / 2 - 20, width: 28, height: 40 } : undefined,
+            } : f));
         }, DEFEAT_BLOW_MS);
-        const clearTimer = setTimeout(() => {
-            setDefeatFlight(f => (f?.id === flight.id ? null : f));
-        }, DEFEAT_BLOW_MS + DEFEAT_FLIGHT_MS);
+        // Safety net: land the card even if the overlay's animation never
+        // reports completion (e.g. element re-mounted mid-flight).
+        const safetyTimer = setTimeout(() => finishDefeatFlight(flight.id), DEFEAT_BLOW_MS + DEFEAT_FLIGHT_MS + 250);
         return () => {
             clearTimeout(swapTimer);
-            clearTimeout(clearTimer);
+            clearTimeout(safetyTimer);
         };
     }
 
     setLocalGameState(gameState);
     if (gameState.status !== 'InProgress') setShowGameOver(true);
+    // finishDefeatFlight is a fresh closure per render; adding it (or
+    // localGameState) to deps would re-run this effect on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState]);
 
   useEffect(() => {
@@ -314,7 +345,7 @@ export const useGameLogic = () => {
 
   return {
     gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-    defeatFlight, disconnectNotice, dismissNotice,
+    defeatFlight, finishDefeatFlight, disconnectNotice, dismissNotice,
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
     createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
   };

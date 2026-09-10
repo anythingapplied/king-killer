@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Tailwind v4 preflight no longer sets this; restore it so clickable
+   controls (Joker refresh, Menu, Share, etc.) show a pointer cursor. */
+button:not(:disabled) {
+    cursor: pointer;
+}
+
 :root {
   --text: #e2e8f0; /* slate-200 */
   --text-h: #ffffff;

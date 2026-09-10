@@ -64,7 +64,7 @@ const HandArea: React.FC<HandAreaProps> = ({
                                     <Card 
                                         card={item.card} 
                                         selected={isSel} 
-                                        onClick={() => isMyTurn && onCardClick(item.originalIndex)} 
+                                        onClick={isMyTurn ? () => onCardClick(item.originalIndex) : undefined} 
                                         className={`w-[11vw] max-w-[95px] transition-all duration-300 ${!isMyTurn ? 'opacity-40 grayscale-[0.4] pointer-events-none' : ''} ${shouldGrey ? 'opacity-10 grayscale brightness-[0.2]' : ''}`} 
                                     />
                                     {showWarning && (

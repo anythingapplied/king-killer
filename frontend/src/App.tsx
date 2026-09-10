@@ -1,15 +1,38 @@
 import React from 'react';
-import { useGameLogic } from './hooks/useGameLogic';
+import { useGameLogic, type DefeatFlight } from './hooks/useGameLogic';
 import HUD from './components/HUD';
 import Arena from './components/Arena';
 import HandArea from './components/HandArea';
 import ActionFooter from './components/ActionFooter';
+import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
+
+// Flies the defeated enemy card from its board rect to the tavern/discard pile
+// rect as a plain full-screen overlay (fixed positioning, pointer-transparent).
+// Deliberately NOT a layoutId project: framer-motion 12 does not animate
+// layoutId handoffs between separate DOM subtrees, so we animate coordinates
+// deterministically instead.
+const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({ flight, onDone }) => {
+    if (!flight.flying || !flight.from || !flight.to) return null;
+    return (
+        <motion.div
+            initial={{ left: flight.from.x, top: flight.from.y, width: flight.from.width, height: flight.from.height, opacity: 1 }}
+            animate={{ left: flight.to.x, top: flight.to.y, width: flight.to.width, height: flight.to.height, opacity: 1 }}
+            transition={{ duration: 0.55, ease: [0.32, 0.72, 0, 1] }}
+            onAnimationComplete={onDone}
+            className="fixed z-[150] pointer-events-none"
+            style={{ willChange: 'left, top, width, height' }}
+            data-testid="flight-overlay"
+        >
+            <Card card={flight.card} className="w-full h-full shadow-2xl" />
+        </motion.div>
+    );
+};
 
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, disconnectNotice, dismissNotice,
+        defeatFlight, finishDefeatFlight, disconnectNotice, dismissNotice,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
     } = useGameLogic();
@@ -77,7 +100,6 @@ const App: React.FC = () => {
                 gameState={localGameState}
                 copySuccess={copySuccess}
                 activeEffects={activeEffects}
-                defeatFlight={defeatFlight}
                 onMenuClick={exitToMenu}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
@@ -87,7 +109,6 @@ const App: React.FC = () => {
             <Arena 
                 gameState={localGameState}
                 activeEffects={activeEffects}
-                defeatFlight={defeatFlight}
                 isImmuneWarning={isImmuneWarning}
                 isDiscarding={isDiscarding}
             />
@@ -122,6 +143,11 @@ const App: React.FC = () => {
                     onYieldClick={() => sendAction({ type: 'Yield' })}
                 />
             </div>
+
+            {/* Defeated enemy flying to its pile */}
+            {defeatFlight && (
+                <FlightOverlay flight={defeatFlight} onDone={() => finishDefeatFlight(defeatFlight.id)} />
+            )}
 
             {/* Global Overlays */}
             <AnimatePresence>

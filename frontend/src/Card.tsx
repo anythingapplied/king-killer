@@ -58,8 +58,9 @@ const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, c
             whileTap={onClick ? { scale: 0.95 } : {}}
             // Selection should be instant, no "normal delay" getting there
             transition={selected ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 20 }}
-            className={`transition-shadow cursor-pointer aspect-[5/7] flex-shrink-0
+            className={`transition-shadow aspect-[5/7] flex-shrink-0
                 ${selected ? 'ring-4 ring-blue-500 shadow-[0_40px_60px_-10px_rgba(59,130,246,0.5)] z-50' : 'shadow-md'} 
+                ${onClick ? 'cursor-pointer' : ''}
                 ${className}`}
         >
             <img 
