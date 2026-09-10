@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "king-killer-core",
+    "king-killer-api",
+]
+resolver = "2"

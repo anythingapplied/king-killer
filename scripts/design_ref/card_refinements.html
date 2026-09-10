@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .section { width: 100%; max-width: 1000px; margin-bottom: 60px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+        .example { display: flex; flex-direction: column; align-items: center; }
+        .card { width: 200px; height: 280px; background: white; border-radius: 12px; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.5); overflow: hidden; }
+        .label { margin-top: 15px; font-weight: bold; color: #94a3b8; font-size: 14px; text-align: center; }
+        
+        /* 1 Symbol + 1 Number Styles */
+        .rank-tl { position: absolute; top: 15px; left: 15px; font-size: 32px; font-weight: 900; color: #1e293b; line-height: 1; }
+        .suit-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 100px; height: 100px; }
+        
+        .plate-body { fill: #1e293b; stroke: black; stroke-width: 2; }
+        .plate-trim { fill: #64748b; opacity: 0.5; stroke: black; stroke-width: 0.5; }
+        
+        /* Corruption Effects */
+        .corrupt-border-v1 { box-shadow: inset 0 0 0 8px #7c3aed; }
+        .corrupt-glow-v2 { box-shadow: 0 0 20px #a855f7, inset 0 0 15px #7c3aed; }
+        .corrupt-gradient-v3 { background: linear-gradient(135deg, white 80%, #581c87 100%); border: 3px solid #7c3aed; }
+        
+        .svg-icon { width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div class="section">
+        <h2>7 of Spades (1 Symbol + 1 Number)</h2>
+        <div class="grid">
+            <!-- 7S V1: Minimalist -->
+            <div class="example">
+                <div class="card">
+                    <div class="rank-tl">7</div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="label">Minimalist (Clean Corners)</div>
+            </div>
+
+            <!-- 7S V2: Corner Icon -->
+            <div class="example">
+                <div class="card">
+                    <div class="rank-tl" style="display:flex; flex-direction:column; align-items:center;">
+                        7
+                        <svg viewBox="0 0 100 100" style="width:20px; height:20px; margin-top:5px;">
+                            <path fill="#1e293b" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                        </svg>
+                    </div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="label">Stacked Corner (Rank + Mini)</div>
+            </div>
+
+            <!-- 7S V3: Large Background Rank -->
+            <div class="example">
+                <div class="card">
+                    <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:180px; font-weight:900; color:#f1f5f9; opacity:0.8;">7</div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="label">Watermark Rank (Center Focus)</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Corrupted Royalty (King of Spades Examples)</h2>
+        <div class="grid">
+            <!-- KS V1: Corrupted Frame -->
+            <div class="example">
+                <div class="card corrupt-border-v1">
+                    <div class="rank-tl" style="color:#7c3aed">K</div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" style="fill:#4c1d95" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" style="fill:#a855f7" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="label">V1: Shadow Frame<br/>(Inset Purple Border)</div>
+            </div>
+
+            <!-- KS V2: Ethereal Glow -->
+            <div class="example">
+                <div class="card corrupt-glow-v2">
+                    <div class="rank-tl" style="color:#a855f7">K</div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                </div>
+                <div class="label">V2: Void Glow<br/>(Outer & Inner Aura)</div>
+            </div>
+
+            <!-- KS V3: Cursed Gradient -->
+            <div class="example">
+                <div class="card corrupt-gradient-v3">
+                    <div class="rank-tl">K</div>
+                    <div class="suit-center">
+                        <svg viewBox="0 0 100 100" class="svg-icon">
+                            <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                            <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                        </svg>
+                    </div>
+                    <!-- Corruption "Vines" -->
+                    <div style="position:absolute; bottom:0; right:0; width:60px; height:60px; background:#7c3aed; clip-path: polygon(100% 0, 100% 100%, 0 100%); opacity:0.4;"></div>
+                </div>
+                <div class="label">V3: Cursed Corner<br/>(Purple Growth)</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

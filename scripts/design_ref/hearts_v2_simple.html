@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+        .example { display: flex; flex-direction: column; align-items: center; margin-bottom: 40px; }
+        .card { width: 180px; height: 250px; background: white; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .label { margin-top: 15px; font-weight: bold; color: #94a3b8; font-size: 14px; text-align: center; }
+        svg { width: 120px; height: 120px; }
+    </style>
+</head>
+<body>
+    <h1>Simple Steel Heart Variants</h1>
+    
+    <div class="grid">
+        <!-- Variant A: The Pure Ridge (Cleanest) -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 Z" fill="#64748b" opacity="0.3"/>
+                    <path d="M50,35 L50,90" stroke="black" stroke-width="2" opacity="0.8"/>
+                </svg>
+            </div>
+            <div class="label">A. Split Ridge</div>
+        </div>
+
+        <!-- Variant B: Segmented Plate (Horizontal) -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M15,45 L85,45 M25,60 L75,60" stroke="#64748b" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+                    <path d="M50,35 L50,90" stroke="black" stroke-width="1" opacity="0.4"/>
+                </svg>
+            </div>
+            <div class="label">B. Laminated Plate</div>
+        </div>
+
+        <!-- Variant C: The Inset Guard -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M50,80 C50,80 25,65 25,45 A12.5,12.5 0 0,1 50,45 A12.5,12.5 0 0,1 75,45 C75,65 50,80 50,80 Z" fill="#64748b" opacity="0.4" stroke="black" stroke-width="1"/>
+                </svg>
+            </div>
+            <div class="label">C. Layered Inset</div>
+        </div>
+
+        <!-- Variant D: Reinforced Cross -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M30,45 L70,45 M50,30 L50,75" stroke="#64748b" stroke-width="6" opacity="0.4" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div class="label">D. Iron Cross</div>
+        </div>
+
+        <!-- Variant E: Beveled Edge -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M50,82 C50,82 18,60 18,38 A16,16 0 0,1 50,38 A16,16 0 0,1 82,38 C82,60 50,82 50,82 Z" fill="none" stroke="#64748b" stroke-width="4" opacity="0.4"/>
+                </svg>
+            </div>
+            <div class="label">E. Beveled Trim</div>
+        </div>
+
+        <!-- Variant F: Shaded Steel -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <path d="M50,35 L50,90 L90,35 A20,20 0 0,0 50,35 Z" fill="#64748b" opacity="0.4"/>
+                </svg>
+            </div>
+            <div class="label">F. Angular Shading</div>
+        </div>
+    </div>
+</body>
+</html>

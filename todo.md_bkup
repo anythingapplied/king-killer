@@ -1,0 +1,33 @@
+# King Killer Project TODOs
+
+## Gameplay Logic
+- [x] **SP Jokers**: Should give a *full* hand (8 cards) instead of just the same amount discarded.
+- [x] **Diamond Draw Test**: Added test case for clockwise draw logic.
+- [ ] **Action Visibility**: 
+    - [ ] Show the exact cards played by the previous player in the "Played Cards" area.
+    - [ ] Show what the enemy was defeated with briefly before cleanup.
+    - [ ] Show the last cards discarded next to the discard pile count.
+    - [ ] Clear "Last Discarded" display when a Heart power (shuffle) occurs.
+- [ ] **Seat Assignment**: Auto-assign random seats to players joining a room.
+
+## UI & Layout
+- [x] **Stationary Hand**: Hand layout is stationary with empty slots for missing cards.
+- [x] **Main Menu Button**: Return to main menu during gameplay.
+- [ ] **Animations**:
+    - [ ] **Draw Animation**: Cards slide from the Tavern deck into their sorted positions in the hand.
+    - [ ] **Combat Effects**: Animated effects for healing, drawing, damaging, shielding, and defeating enemies.
+- [ ] **Visual Feedback (Greying Out)**:
+    - [ ] Grey out all cards in hand once the discard amount is satisfied.
+    - [ ] Grey out cards in hand that cannot be added to the current play selection.
+- [ ] **Discard Display**: Change to show "Remaining" value only (e.g., "3" instead of "7/10").
+
+## Completed
+- [x] Fix "Your Turn" overlap/visibility.
+- [x] Stuck state prevention.
+- [x] Single player Joker spots in HUD.
+- [x] Fix card top clipping.
+- [x] Remove scroll bar for cards / Optimize landscape.
+- [x] Require full damage discard in one go.
+- [x] Copy code visual feedback.
+- [x] Persistence of seat on refresh.
+- [x] Diamond draw order.

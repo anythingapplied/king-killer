@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+        .example { display: flex; flex-direction: column; align-items: center; }
+        .card { width: 200px; height: 280px; background: white; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; }
+        .label { margin-top: 20px; font-weight: bold; color: #94a3b8; }
+        svg { width: 160px; height: 160px; }
+    </style>
+</head>
+<body>
+    <h1>Refined Thick Pointy Broadswords</h1>
+    <div class="grid">
+        <!-- Variation 1: The Executioner -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <g transform="rotate(45, 50, 50)">
+                        <path d="M50,2 L60,15 L60,70 L40,70 L40,15 Z" fill="black"/> <!-- Blade -->
+                        <path d="M50,5 L50,65" stroke="white" stroke-width="1" opacity="0.3"/> <!-- Fuller -->
+                        <rect x="30" y="70" width="40" height="8" rx="2" fill="black"/> <!-- Guard -->
+                        <rect x="44" y="78" width="12" height="15" rx="1" fill="black"/> <!-- Grip -->
+                        <circle cx="50" cy="95" r="5" fill="black"/> <!-- Pommel -->
+                    </g>
+                    <g transform="rotate(-45, 50, 50)">
+                        <path d="M50,2 L60,15 L60,70 L40,70 L40,15 Z" fill="black"/>
+                        <path d="M50,5 L50,65" stroke="white" stroke-width="1" opacity="0.3"/>
+                        <rect x="30" y="70" width="40" height="8" rx="2" fill="black"/>
+                        <rect x="44" y="78" width="12" height="15" rx="1" fill="black"/>
+                        <circle cx="50" cy="95" r="5" fill="black"/>
+                    </g>
+                </svg>
+            </div>
+            <div class="label">1. The Executioner (Very Thick)</div>
+        </div>
+
+        <!-- Variation 2: The Vanguard -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <g transform="rotate(45, 50, 50)">
+                        <path d="M50,0 L58,20 L58,70 L42,70 L42,20 Z" fill="black"/> <!-- Blade -->
+                        <path d="M50,2 L50,68" stroke="white" stroke-width="0.8" stroke-dasharray="2,2"/> <!-- Center Line -->
+                        <path d="M32,70 L68,70 L68,74 Q50,68 32,74 Z" fill="black"/> <!-- Curved Guard -->
+                        <rect x="45" y="74" width="10" height="18" rx="2" fill="black"/> <!-- Grip -->
+                        <rect x="43" y="92" width="14" height="6" rx="1" fill="black"/> <!-- Flat Pommel -->
+                    </g>
+                    <g transform="rotate(-45, 50, 50)">
+                        <path d="M50,0 L58,20 L58,70 L42,70 L42,20 Z" fill="black"/>
+                        <path d="M50,2 L50,68" stroke="white" stroke-width="0.8" stroke-dasharray="2,2"/>
+                        <path d="M32,70 L68,70 L68,74 Q50,68 32,74 Z" fill="black"/>
+                        <rect x="45" y="74" width="10" height="18" rx="2" fill="black"/>
+                        <rect x="43" y="92" width="14" height="6" rx="1" fill="black"/>
+                    </g>
+                </svg>
+            </div>
+            <div class="label">2. The Vanguard (Sharp Taper)</div>
+        </div>
+
+        <!-- Variation 3: The Crusader -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <g transform="rotate(45, 50, 50)">
+                        <path d="M50,2 L62,30 L58,70 L42,70 L38,30 Z" fill="black"/> <!-- Leaf-style Blade -->
+                        <path d="M50,5 L50,65" stroke="white" stroke-width="1.5" opacity="0.2"/>
+                        <path d="M30,68 L70,68 L75,76 L25,76 Z" fill="black"/> <!-- Angled Guard -->
+                        <rect x="45" y="76" width="10" height="14" fill="black"/> <!-- Grip -->
+                        <circle cx="50" cy="94" r="6" fill="black" stroke="white" stroke-width="1"/> <!-- Inset Pommel -->
+                    </g>
+                    <g transform="rotate(-45, 50, 50)">
+                        <path d="M50,2 L62,30 L58,70 L42,70 L38,30 Z" fill="black"/>
+                        <path d="M50,5 L50,65" stroke="white" stroke-width="1.5" opacity="0.2"/>
+                        <path d="M30,68 L70,68 L75,76 L25,76 Z" fill="black"/>
+                        <rect x="45" y="76" width="10" height="14" fill="black"/>
+                        <circle cx="50" cy="94" r="6" fill="black" stroke="white" stroke-width="1"/>
+                    </g>
+                </svg>
+            </div>
+            <div class="label">3. The Crusader (Heavy Leaf)</div>
+        </div>
+    </div>
+</body>
+</html>

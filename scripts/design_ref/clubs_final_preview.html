@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .card { width: 240px; height: 336px; background: white; border-radius: 16px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 20px 50px rgba(0,0,0,0.5); }
+        .label { margin-top: 20px; font-weight: bold; color: #94a3b8; }
+        svg { width: 180px; height: 180px; }
+    </style>
+</head>
+<body>
+    <h1>Refined Crusader Clubs</h1>
+    <div class="card">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <!-- Sword 1 (Bottom Left to Top Right) -->
+            <g transform="translate(5, 5) rotate(45, 45, 45)">
+                <path d="M45,2 L57,30 L53,70 L37,70 L33,30 Z" fill="black"/> <!-- Leaf Blade -->
+                <path d="M45,5 L45,65" stroke="white" stroke-width="1.5" opacity="0.2"/>
+                <path d="M25,68 L65,68 L70,76 L20,76 Z" fill="black"/> <!-- Angled Guard -->
+                <rect x="40" y="76" width="10" height="12" fill="black"/> <!-- Grip -->
+                <circle cx="45" cy="92" r="6" fill="black"/> <!-- Executioner Pommel -->
+            </g>
+            <!-- Sword 2 (Bottom Right to Top Left) -->
+            <g transform="translate(-5, 5) rotate(-45, 55, 45)">
+                <path d="M55,2 L67,30 L63,70 L47,70 L43,30 Z" fill="black"/> <!-- Leaf Blade -->
+                <path d="M55,5 L55,65" stroke="white" stroke-width="1.5" opacity="0.2"/>
+                <path d="M35,68 L75,68 L80,76 L30,76 Z" fill="black"/> <!-- Angled Guard -->
+                <rect x="50" y="76" width="10" height="12" fill="black"/> <!-- Grip -->
+                <circle cx = "55" cy="92" r="6" fill="black"/> <!-- Executioner Pommel -->
+            </g>
+        </svg>
+    </div>
+    <div class="label">Final Crusader (Spaced Hilts + Ball Pommels)</div>
+</body>
+</html>

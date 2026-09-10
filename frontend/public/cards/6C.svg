@@ -1,0 +1,22 @@
+<svg width="200" height="280" viewBox="0 0 200 280" xmlns="http://www.w3.org/2000/svg">
+  <rect width="200" height="280" rx="12" fill="white" />
+  
+  <text x="100" y="110" text-anchor="middle" font-family="system-ui, sans-serif" font-size="70" font-weight="900" fill="#1e293b">6</text>
+  
+    <g transform="translate(100, 195) scale(1.2) translate(-50, -50)">
+        <g transform="translate(5, 5) rotate(45, 45, 45)">
+            <path fill="#1e293b" stroke="black" stroke-width="2" d="M45,2 L57,30 L53,70 L37,70 L33,30 Z"/>
+            <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M45,10 L50,30 L48,65 L42,65 L40,30 Z"/>
+            <path fill="#1e293b" stroke="black" stroke-width="2" d="M25,68 L65,68 L70,76 L20,76 Z"/>
+            <rect fill="#1e293b" stroke="black" stroke-width="2" x="40" y="76" width="10" height="12"/>
+            <circle fill="#1e293b" stroke="black" stroke-width="2" cx="45" cy="92" r="6"/>
+        </g>
+        <g transform="translate(-5, 5) rotate(-45, 55, 45)">
+            <path fill="#1e293b" stroke="black" stroke-width="2" d="M55,2 L67,30 L63,70 L47,70 L43,30 Z"/>
+            <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M55,10 L60,30 L58,65 L52,65 L50,30 Z"/>
+            <path fill="#1e293b" stroke="black" stroke-width="2" d="M35,68 L75,68 L80,76 L30,76 Z"/>
+            <rect fill="#1e293b" stroke="black" stroke-width="2" x="50" y="76" width="10" height="12"/>
+            <circle fill="#1e293b" stroke="black" stroke-width="2" cx="55" cy="92" r="6"/>
+        </g>
+    </g>
+</svg>

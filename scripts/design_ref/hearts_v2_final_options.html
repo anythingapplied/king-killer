@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+        .example { display: flex; flex-direction: column; align-items: center; margin-bottom: 40px; }
+        .card { width: 180px; height: 250px; background: white; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .label { margin-top: 15px; font-weight: bold; color: #94a3b8; font-size: 14px; text-align: center; }
+        svg { width: 120px; height: 120px; }
+        .outer { fill: #1e293b; stroke: black; stroke-width: 2; }
+        .inner { fill: #64748b; opacity: 0.4; stroke: black; stroke-width: 0.5; }
+    </style>
+</head>
+<body>
+    <h1>Heart V2 Refinement (The Ridge Line)</h1>
+    
+    <div class="grid">
+        <!-- Variant 1: The Rivet Ridge (Industrial) -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path class="outer" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                    <path class="inner" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    <!-- Rivet Line -->
+                    <line x1="50" y1="35" x2="50" y2="90" stroke="black" stroke-width="1.5" stroke-dasharray="0.1, 8.5" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div class="label">1. Riveted Ridge</div>
+        </div>
+
+        <!-- Variant 2: The Bolted Plate -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path class="outer" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                    <path class="inner" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    <line x1="50" y1="35" x2="50" y2="90" stroke="black" stroke-width="1"/>
+                    <!-- Large Industrial Rivets at joints -->
+                    <circle cx="50" cy="40" r="2.5" fill="black"/>
+                    <circle cx="50" cy="62" r="2.5" fill="black"/>
+                    <circle cx="50" cy="84" r="2.5" fill="black"/>
+                </svg>
+            </div>
+            <div class="label">2. Triple Bolt</div>
+        </div>
+
+        <!-- Variant 3: The Weld Seam -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path class="outer" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                    <path class="inner" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    <!-- Rough Industrial Line -->
+                    <line x1="50" y1="35" x2="50" y2="90" stroke="black" stroke-width="3" stroke-dasharray="2,1"/>
+                </svg>
+            </div>
+            <div class="label">3. Heavy Weld</div>
+        </div>
+
+        <!-- Variant 4: The Clean Bevel -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path class="outer" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                    <path class="inner" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    <!-- Simple Lighting-based Line -->
+                    <path d="M50,35 L50,90" stroke="black" stroke-width="1"/>
+                    <path d="M50,40 L50,80" stroke="white" stroke-width="2" opacity="0.1"/>
+                </svg>
+            </div>
+            <div class="label">4. Ghost Ridge</div>
+        </div>
+
+        <!-- Variant 5: The Inset Channel -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <path class="outer" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                    <path class="inner" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    <!-- Recessed line -->
+                    <rect x="48.5" y="38" width="3" height="45" rx="1" fill="black" opacity="0.6"/>
+                </svg>
+            </div>
+            <div class="label">5. Recessed Channel</div>
+        </div>
+    </div>
+</body>
+</html>

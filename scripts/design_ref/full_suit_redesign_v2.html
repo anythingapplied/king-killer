@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .section { width: 100%; max-width: 1000px; margin-bottom: 60px; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+        .example { display: flex; flex-direction: column; align-items: center; }
+        .card { width: 180px; height: 250px; background: white; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .label { margin-top: 15px; font-weight: bold; color: #94a3b8; font-size: 14px; text-align: center; }
+        svg { width: 130px; height: 130px; }
+        
+        .plate-body { fill: #1e293b; stroke: black; stroke-width: 2; }
+        .plate-trim { fill: #64748b; opacity: 0.5; stroke: black; stroke-width: 0.5; }
+    </style>
+</head>
+<body>
+    <div class="section">
+        <h2>Finalized Suits (Fixed Clubs)</h2>
+        <div class="grid">
+            <!-- FINAL CLUBS - FIXED HANDLE -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <g transform="translate(5, 5) rotate(45, 45, 45)">
+                            <path class="plate-body" d="M45,2 L57,30 L53,70 L37,70 L33,30 Z"/>
+                            <path class="plate-trim" d="M45,10 L50,30 L48,65 L42,65 L40,30 Z"/>
+                            <path class="plate-body" d="M25,68 L65,68 L70,76 L20,76 Z"/> <!-- Guard -->
+                            <rect class="plate-body" x="40" y="76" width="10" height="12"/> <!-- Grip -->
+                            <circle class="plate-body" cx="45" cy="92" r="6"/> <!-- Pommel -->
+                        </g>
+                        <g transform="translate(-5, 5) rotate(-45, 55, 45)">
+                            <path class="plate-body" d="M55,2 L67,30 L63,70 L47,70 L43,30 Z"/>
+                            <path class="plate-trim" d="M55,10 L60,30 L58,65 L52,65 L50,30 Z"/>
+                            <path class="plate-body" d="M35,68 L75,68 L80,76 L30,76 Z"/> <!-- Guard -->
+                            <rect class="plate-body" x="50" y="76" width="10" height="12"/> <!-- Grip -->
+                            <circle class="plate-body" cx="55" cy="92" r="6"/> <!-- Pommel -->
+                        </g>
+                    </svg>
+                </div>
+                <div class="label">Clubs:<br/>Fixed Handles</div>
+            </div>
+
+            <!-- FINAL SPADES -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <path class="plate-body" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+                        <path class="plate-trim" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+                    </svg>
+                </div>
+                <div class="label">Spades:<br/>Heater Shield</div>
+            </div>
+
+            <!-- FINAL HEARTS -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <path class="plate-body" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+                        <path class="plate-trim" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+                    </svg>
+                </div>
+                <div class="label">Hearts:<br/>Steel Heart</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Taller Diamond Variations (No Center Lines)</h2>
+        <div class="grid">
+            <!-- DIAMOND V2.1: Simple Taller D1 -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <path class="plate-body" d="M50,5 L80,50 L50,95 L20,50 Z"/>
+                        <path class="plate-trim" d="M50,20 L70,50 L50,80 L30,50 Z"/>
+                    </svg>
+                </div>
+                <div class="label">2.1 Tall Inset</div>
+            </div>
+
+            <!-- DIAMOND V2.2: The Gemstone Plate -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <!-- Outer Plate -->
+                        <path class="plate-body" d="M50,5 L82,50 L50,95 L18,50 Z"/>
+                        <!-- Inner Diamond Shading -->
+                        <path d="M50,15 L72,50 L50,85 L28,50 Z" fill="#64748b" opacity="0.3"/>
+                        <path d="M50,15 L28,50 L50,85 Z" fill="#64748b" opacity="0.5"/>
+                        <path d="M50,15 L72,50 L50,85 L28,50 Z" fill="none" stroke="black" stroke-width="1"/>
+                    </svg>
+                </div>
+                <div class="label">2.2 Shaded Plate</div>
+            </div>
+
+            <!-- DIAMOND V2.3: Double-Steel Shard -->
+            <div class="example">
+                <div class="card">
+                    <svg viewBox="0 0 100 100">
+                        <path class="plate-body" d="M50,5 L80,50 L50,95 L20,50 Z"/>
+                        <!-- Recessed Center Shard -->
+                        <path d="M50,30 L65,50 L50,70 L35,50 Z" fill="#64748b" stroke="black" stroke-width="1.5"/>
+                    </svg>
+                </div>
+                <div class="label">2.3 Recessed Shard</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

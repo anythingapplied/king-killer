@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 40px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; }
+        .example { display: flex; flex-direction: column; align-items: center; }
+        .card { width: 200px; height: 280px; background: white; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+        .label { margin-top: 20px; font-weight: bold; color: #94a3b8; font-size: 14px; text-align: center; }
+        svg { width: 140px; height: 140px; }
+    </style>
+</head>
+<body>
+    <h1>Steel Heart Variations (Black/Grey RPG Style)</h1>
+    
+    <div class="grid">
+        <!-- Variation 2.1: The Riveted Plate -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Base Heart -->
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <!-- Segmented Plates -->
+                    <path d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40" fill="#64748b" opacity="0.4"/>
+                    <path d="M50,80 C50,80 80,60 80,40 A15,15 0 0,1 50,40" fill="#475569" opacity="0.3"/>
+                    <!-- Rivets -->
+                    <circle cx="50" cy="45" r="2" fill="black" opacity="0.5"/>
+                    <circle cx="50" cy="65" r="2" fill="black" opacity="0.5"/>
+                    <circle cx="50" cy="85" r="2" fill="black" opacity="0.5"/>
+                </svg>
+            </div>
+            <div class="label">2.1 Riveted Plate<br/>(Industrial Armor)</div>
+        </div>
+
+        <!-- Variation 2.2: The Gothic Bevel -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Main Heart with Sharp Bevel -->
+                    <path d="M50,90 L10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 L50,90 Z" fill="#1e293b" stroke="black" stroke-width="2"/>
+                    <!-- Left Lighting -->
+                    <path d="M50,90 L10,35 A20,20 0 0,1 50,35 Z" fill="#94a3b8" opacity="0.2"/>
+                    <!-- Center Ridge -->
+                    <path d="M50,35 L50,90" stroke="black" stroke-width="2" stroke-linecap="round"/>
+                    <!-- Cross-Guard Inset -->
+                    <path d="M30,35 L70,35" stroke="black" stroke-width="4" opacity="0.8"/>
+                </svg>
+            </div>
+            <div class="label">2.2 Gothic Bevel<br/>(Sharp Geometric)</div>
+        </div>
+
+        <!-- Variation 2.3: The Knight's Medallion -->
+        <div class="example">
+            <div class="card">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Base Heart -->
+                    <path d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z" fill="#0f172a" stroke="black" stroke-width="2"/>
+                    <!-- Inset Heart -->
+                    <path d="M50,75 C50,75 25,60 25,40 A12,12 0 0,1 50,40 A12,12 0 0,1 75,40 C75,60 50,75 50,75 Z" fill="#64748b" opacity="0.6"/>
+                    <!-- Border Detail -->
+                    <path d="M50,15 L50,25 M15,50 L25,50 M85,50 L75,50" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+            </div>
+            <div class="label">2.3 Knight's Medallion<br/>(Ornate Inset)</div>
+        </div>
+    </div>
+</body>
+</html>
