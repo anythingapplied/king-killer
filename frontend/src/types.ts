@@ -58,6 +58,9 @@ export interface Player {
 export interface RoomMember {
     seat: number;
     name: string;
+    /** True for whoever first joined this room. Only the host may start a new
+     *  deal. Optional so a snapshot from an older server still type-checks. */
+    host?: boolean;
 }
 
 /** The state broadcast by the server: the shared game plus the full room

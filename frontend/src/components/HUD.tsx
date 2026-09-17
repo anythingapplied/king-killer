@@ -19,6 +19,10 @@ interface HUDProps {
     onLogClick: () => void;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
+    /** Only the room's host may start a new deal; the server enforces this
+     *  independently, so this just keeps the button honest about what it can
+     *  actually do rather than firing a request that gets silently dropped. */
+    isHost: boolean;
     onNewGameClick: () => void;
     onRename: (name: string) => void;
 }
@@ -27,7 +31,7 @@ interface HUDProps {
 const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted,
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost,
     onMenuClick, onToggleMute, onLogClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
@@ -64,7 +68,9 @@ const HUD: React.FC<HUDProps> = ({
             <div className="flex justify-between items-center gap-1 px-1 mb-1">
                 <div className="flex gap-1 flex-shrink-0">
                     <button onClick={onMenuClick} title="Leave this room and return to the main menu" className="t-micro bg-slate-700 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Exit</button>
-                    <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+                    {isHost && (
+                        <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+                    )}
                     <button onClick={onLogClick} title="Show the game log" aria-label="Show the game log" data-testid="log-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none">📜</button>
                     {/* Solo never chimes (the turn comes straight back), so the
                         control would be dead weight on the tightest layout. */}

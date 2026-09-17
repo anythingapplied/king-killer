@@ -243,7 +243,10 @@ export const useGameLogic = () => {
     if (!gameId || myPlayerId !== null) return;
     const savedSeat = parseSeat(localStorage.getItem(`seat_${gameId}`));
     if (savedSeat !== null) setMyPlayerId(savedSeat);
-  }, [gameId, myPlayerId]);
+    // myPlayerId is read only to skip re-restoring once it's set - including it
+    // would re-run this effect on its own write.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameId]);
 
   // connectWebSocket and scheduleReconnect call each other. Routing the back
   // edge through a ref lets scheduleReconnect be declared first, so it is no
@@ -262,7 +265,11 @@ export const useGameLogic = () => {
   const connectWebSocket = useCallback(() => {
     const id = gameId;
     if (!id || intentionalCloseRef.current) return;
-    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}`);
+    // The server uses this only to authorize NewGame/Reset (see WsParams in
+    // main.rs) - every other action still targets the game's own
+    // current_player_index, so this cannot be used to act as someone else.
+    const seatParam = myPlayerId !== null ? `?seat=${myPlayerId}` : '';
+    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${seatParam}`);
     ws.current = socket;
     // A socket we have already moved on from can still deliver a frame that was
     // in flight when we closed it. Applying it overwrites the room we just
@@ -324,7 +331,7 @@ export const useGameLogic = () => {
       backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
       scheduleReconnect();
     };
-  }, [gameId, scheduleReconnect]);
+  }, [gameId, myPlayerId, scheduleReconnect]);
 
   useEffect(() => {
     connectRef.current = connectWebSocket;
@@ -406,6 +413,15 @@ export const useGameLogic = () => {
   // A seat that no longer exists on this table (e.g. a 4-player game was reset
   // to 2) must not be used to index into `players`.
   const seatedPlayer = (myPlayerId !== null && localGameState?.players[myPlayerId]) || null;
+
+  // Whether this seat may start a new deal. Mirrors the server's own check
+  // (Member.host) so the button reflects reality instead of firing a request
+  // the server will silently drop. Defaults to false while the roster is still
+  // loading, or for a server old enough not to send `host` at all.
+  const isHost = useMemo(
+    () => myPlayerId !== null && roster.some(m => m.seat === myPlayerId && m.host === true),
+    [roster, myPlayerId]
+  );
 
   /**
    * Rules: a player may not yield once [rules wording removed]. The server enforces it too, but it rejects silently, so
@@ -619,7 +635,7 @@ export const useGameLogic = () => {
 
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-    defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute,
+    defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
     isChoosingNextPlayer,
     createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer

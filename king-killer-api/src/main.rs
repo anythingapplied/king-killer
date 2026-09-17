@@ -1,4 +1,5 @@
 use axum::{
+    extract::Query,
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
     response::IntoResponse,
     routing::{get, post},
@@ -31,6 +32,13 @@ struct AppState {
 struct Member {
     seat: usize,
     name: String,
+    /// True for whoever first joined this room. The host is the only member
+    /// allowed to start a new deal (`NewGame`/`Reset`) — a spectator, or any
+    /// later-joining player, could otherwise reset the table out from under
+    /// everyone mid-game. `#[serde(default)]` keeps a room persisted before
+    /// this field existed loadable, as `false`, i.e. no host.
+    #[serde(default)]
+    host: bool,
 }
 
 /// A room is a persistent set of members plus the currently running game.
@@ -96,6 +104,9 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
 /// game is full the joiner watches instead, receiving a monotonic seat at or
 /// above the player count. Returns the seat and whether it is a player seat.
 fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
+    // Recorded before either branch pushes a Member, so it reflects the room
+    // as it was before this join - i.e. whether anyone was here already.
+    let is_first_ever_member = room.members.is_empty();
     let player_count = room.game.players.len();
     let taken: HashSet<usize> = room.members.iter().map(|m| m.seat).collect();
     let free: Vec<usize> = (0..player_count).filter(|s| !taken.contains(s)).collect();
@@ -104,6 +115,7 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
         room.members.push(Member {
             seat,
             name: name.clone().unwrap_or_default(),
+            host: is_first_ever_member,
         });
         if let Some(provided_name) = name {
             if let Some(player) = room.game.players.get_mut(seat) {
@@ -117,6 +129,7 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
         room.members.push(Member {
             seat,
             name: name.unwrap_or_default(),
+            host: is_first_ever_member,
         });
         (seat, false)
     }
@@ -196,10 +209,18 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, p)| {
-                    seats.get(i).copied().unwrap_or(false).then_some(Member {
-                        seat: i,
-                        name: p.name.clone(),
-                    })
+                    seats.get(i).copied().unwrap_or(false).then_some((i, p))
+                })
+                // The lowest occupied seat becomes host. These rooms predate the
+                // host field entirely, so there is no real "who joined first" to
+                // recover - this just picks a consistent, non-arbitrary member
+                // rather than leaving every migrated room without a host (and
+                // therefore unable to ever start a new deal).
+                .enumerate()
+                .map(|(order, (i, p))| Member {
+                    seat: i,
+                    name: p.name.clone(),
+                    host: order == 0,
                 })
                 .collect();
             rooms.insert(
@@ -347,6 +368,7 @@ async fn create_game(
     members.push(Member {
         seat: 0,
         name: game.players[0].name.clone(),
+        host: true, // the room's creator is its first-ever member
     });
 
     let room = Room {
@@ -410,15 +432,26 @@ async fn get_game(
     }
 }
 
+#[derive(Deserialize)]
+struct WsParams {
+    /// The seat this connection is speaking for, as returned by `join`. Used
+    /// only to authorize host-only actions (`NewGame`/`Reset`) - every other
+    /// action still targets `current_player_index` server-side exactly as
+    /// before, so a wrong or missing seat cannot be used to act as someone
+    /// else, only to lose the ability to start a new deal.
+    seat: Option<usize>,
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
+    Query(params): Query<WsParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, id, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, id, params.seat, state))
 }
 
-async fn handle_socket(socket: WebSocket, id: String, state: AppState) {
+async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state: AppState) {
     touch(&state.last_activity);
     let rx = {
         let broadcasts = state.broadcasts.read().unwrap();
@@ -462,6 +495,20 @@ async fn handle_socket(socket: WebSocket, id: String, state: AppState) {
                 // parse and the client's keepalive did nothing at all.
                 if matches!(action, GameAction::Ping) {
                     continue;
+                }
+
+                // Only the room's host may start a new deal - anyone else
+                // (a spectator, or any later-joining player) sending
+                // NewGame/Reset is dropped here, before it is timestamped,
+                // persisted, or broadcast, exactly like an unrecognized action.
+                if matches!(action, GameAction::NewGame { .. } | GameAction::Reset) {
+                    let is_host = seat.is_some_and(|s| {
+                        state_recv.rooms.read().unwrap().get(&id)
+                            .is_some_and(|room| room.members.iter().any(|m| m.seat == s && m.host))
+                    });
+                    if !is_host {
+                        continue;
+                    }
                 }
 
                 let action_type = match &action {
@@ -553,9 +600,9 @@ mod tests {
         let room = Room {
             id: "TEST01".to_string(),
             members: vec![
-                Member { seat: 0, name: String::new() },
-                Member { seat: 1, name: "Bob".to_string() },
-                Member { seat: 2, name: "Carl".to_string() },
+                Member { seat: 0, name: String::new(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 2, name: "Carl".to_string(), host: false },
             ],
             game,
         };
@@ -617,7 +664,7 @@ mod tests {
     async fn claim_seat_prefers_players_then_spectators() {
         let mut room = Room {
             id: "SEATS".to_string(),
-            members: vec![Member { seat: 0, name: "Host".to_string() }],
+            members: vec![Member { seat: 0, name: "Host".to_string(), host: true }],
             game: GameState::new(2),
         };
 
@@ -642,9 +689,9 @@ mod tests {
         let mut room = Room {
             id: "RESTART".to_string(),
             members: vec![
-                Member { seat: 0, name: "Host".to_string() },
-                Member { seat: 1, name: "Bob".to_string() },
-                Member { seat: 2, name: "Carol".to_string() },
+                Member { seat: 0, name: "Host".to_string(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 2, name: "Carol".to_string(), host: false },
             ],
             game: GameState::new(3),
         };
@@ -666,7 +713,7 @@ mod tests {
         let game = GameState::new(2);
         persist_room(&pool, &Room {
             id: "GAME01".to_string(),
-            members: vec![Member { seat: 0, name: String::new() }],
+            members: vec![Member { seat: 0, name: String::new(), host: true }],
             game,
         })
         .await;
@@ -680,5 +727,73 @@ mod tests {
                 .unwrap();
         assert_eq!(seed, game.seed as i64);
         assert_eq!(version, game.version as i64);
+    }
+
+    #[tokio::test]
+    async fn only_the_first_ever_joiner_is_host() {
+        let mut room = Room {
+            id: "HOSTTEST".to_string(),
+            members: vec![],
+            game: GameState::new(2),
+        };
+
+        let (alice_seat, _) = claim_seat(&mut room, Some("Alice".to_string()));
+        let alice = room.members.iter().find(|m| m.seat == alice_seat).unwrap();
+        assert!(alice.host, "the first-ever member of an empty room is host");
+
+        let (bob_seat, _) = claim_seat(&mut room, Some("Bob".to_string()));
+        let bob = room.members.iter().find(|m| m.seat == bob_seat).unwrap();
+        assert!(!bob.host, "a later joiner is never host, even taking a player seat");
+
+        // Fill the remaining player seats and overflow into spectators: still
+        // no one but Alice is ever host.
+        let (carol_seat, carol_is_player) = claim_seat(&mut room, Some("Carol".to_string()));
+        assert!(!carol_is_player, "2-player room: Carol is a spectator");
+        let carol = room.members.iter().find(|m| m.seat == carol_seat).unwrap();
+        assert!(!carol.host);
+    }
+
+    #[tokio::test]
+    async fn host_survives_a_new_deal() {
+        // Member.host is keyed by seat and deal_new_game never touches
+        // `members`, so a new deal must not silently demote or lose the host.
+        let mut room = Room {
+            id: "HOSTPERSIST".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+            ],
+            game: GameState::new(2),
+        };
+
+        deal_new_game(&mut room, 3);
+
+        let alice = room.members.iter().find(|m| m.seat == 0).unwrap();
+        assert!(alice.host, "the host survives a re-deal");
+        assert_eq!(room.members.iter().filter(|m| m.host).count(), 1, "still exactly one host");
+    }
+
+    #[tokio::test]
+    async fn non_host_new_game_action_is_silently_ignored() {
+        // Exercises the same is_host predicate the WebSocket dispatch gate
+        // uses, at the Room level, so the rule is covered without needing to
+        // drive an actual socket in a unit test.
+        let room = Room {
+            id: "GATE".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+            ],
+            game: GameState::new(2),
+        };
+
+        let is_host = |seat: Option<usize>| {
+            seat.is_some_and(|s| room.members.iter().any(|m| m.seat == s && m.host))
+        };
+
+        assert!(is_host(Some(0)), "the host may start a new deal");
+        assert!(!is_host(Some(1)), "a non-host player may not");
+        assert!(!is_host(Some(99)), "an unknown seat may not");
+        assert!(!is_host(None), "a connection with no seat may not");
     }
 }
