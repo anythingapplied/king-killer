@@ -10,6 +10,37 @@ button:not(:disabled) {
   --text: #e2e8f0; /* slate-200 */
   --text-h: #ffffff;
   --bg: #0f172a; /* slate-900 */
+
+  /* ---------------------------------------------------------------------
+     Scaling tokens.
+
+     The board is a fixed-height three-row grid, so the thing that actually
+     runs out is vertical space, not width. Every card size below is therefore
+     derived from a height budget (dvh, which excludes mobile browser chrome)
+     and clamped at both ends: small enough for a 640px-tall landscape phone,
+     large enough that a 1440p desktop doesn't render postage stamps.
+     --------------------------------------------------------------------- */
+
+  /* Height of the hand row. Card width follows from it via the 5:7 ratio. */
+  --hand-h: clamp(4.75rem, 16dvh, 10.5rem);
+  --hand-gap: clamp(0.25rem, 1.1vw, 0.9rem);
+  /* Width budget for one hand card, so a card is never taller than the row. */
+  --hand-card-max-w: calc(var(--hand-h) * 5 / 7);
+
+  /* Thumbnails (castle tier strip, last play). */
+  --thumb-w: clamp(1.6rem, 4.4vw, 3.1rem);
+
+  /* Fluid type ramp. */
+  --t-micro: clamp(0.5rem, 0.42rem + 0.32vw, 0.75rem);
+  --t-label: clamp(0.5625rem, 0.47rem + 0.42vw, 0.9rem);
+  --t-body: clamp(0.75rem, 0.66rem + 0.42vw, 1.05rem);
+  --t-stat: clamp(1.05rem, 0.8rem + 1.15vw, 2.1rem);
+
+  /* Notch / home-indicator insets, 0 on everything that doesn't have them. */
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
 }
 
 body {
@@ -17,8 +48,74 @@ body {
   background-color: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  /* The board owns the viewport; nothing should rubber-band behind it. */
+  overscroll-behavior: none;
 }
 
 #root {
-  min-height: 100vh;
+  min-height: 100vh; /* fallback for browsers without dvh */
+  min-height: 100dvh;
+}
+
+/* Type ramp utilities. Plain CSS rather than arbitrary Tailwind values so one
+   edit rescales every label in the app. */
+.t-micro { font-size: var(--t-micro); }
+.t-label { font-size: var(--t-label); }
+.t-body  { font-size: var(--t-body); }
+.t-stat  { font-size: var(--t-stat); }
+
+/* ---- Board shell ------------------------------------------------------- */
+
+/* dvh tracks the visible viewport as mobile browser chrome collapses, so the
+   footer no longer hides under the URL bar. */
+.board-shell {
+  height: 100vh;
+  height: 100dvh;
+  padding-top: var(--safe-t);
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
+}
+
+/* The footer is the last thing above the home indicator. */
+.board-footer {
+  padding-bottom: calc(var(--safe-b) + 0.5rem);
+}
+
+/* ---- Hand row ---------------------------------------------------------- */
+
+/* Slots share the row equally (flex-basis 0), so a 5-card and an 8-card hand
+   both fill the width without overflowing, and each slot is capped at the
+   width implied by the row height so a card never outgrows its row. */
+.hand-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--hand-gap);
+  width: 100%;
+  height: var(--hand-h);
+}
+
+.hand-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: var(--hand-card-max-w);
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+/* Width-driven: height follows from aspect-ratio, so it can never exceed the
+   row height given the max-width cap above. */
+.hand-card {
+  width: 100%;
+}
+
+.thumb-card {
+  width: var(--thumb-w);
+}
+
+/* A solo hand is 8 cards wide. On a narrow phone the gaps are what's expensive,
+   so give the width back to the cards. */
+@media (max-width: 400px) {
+  :root { --hand-gap: 0.125rem; }
 }

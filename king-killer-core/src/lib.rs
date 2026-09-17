@@ -41,7 +41,45 @@ impl GameRng {
     }
 }
 
-/// Fisher–Yates shuffle using [`GameRng`].
+/// Resolution priority for suit powers.
+///
+/// Hearts must resolve before Diamonds (heal into the Tavern deck, *then* draw
+/// from it). Clubs and Spades are order-independent, but they still need a
+/// fixed rank: a comparator that reports most pairs as `Equal` while reporting
+/// one pair as ordered is not a total order, which silently produces the wrong
+/// order and can panic on newer toolchains.
+fn suit_resolution_order(suit: Suit) -> u8 {
+    match suit {
+        Suit::Hearts => 0,
+        Suit::Diamonds => 1,
+        Suit::Clubs => 2,
+        Suit::Spades => 3,
+    }
+}
+
+/// Validates hand indices coming off the wire and returns them sorted
+/// descending, which is the order they must be removed in so earlier removals
+/// don't shift later ones.
+///
+/// Duplicates are rejected: because each `remove` shifts the hand, a repeated
+/// index used to pull out a *different* card, letting a client play or discard
+/// cards it never selected.
+fn validate_hand_indices(indices: &[usize], hand_len: usize) -> Result<Vec<usize>, String> {
+    if indices.is_empty() {
+        return Err("No cards selected".to_string());
+    }
+    let mut sorted = indices.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    if sorted[0] >= hand_len {
+        return Err("Invalid card index".to_string());
+    }
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err("Duplicate card index".to_string());
+    }
+    Ok(sorted)
+}
+
+/// Fisher-Yates shuffle using [`GameRng`].
 fn shuffle<T>(slice: &mut [T], rng: &mut GameRng) {
     for i in (1..slice.len()).rev() {
         let j = rng.next_index(i);
@@ -212,6 +250,12 @@ pub struct GameState {
     /// How the most recently defeated enemy card was resolved, used for
     /// client-side defeat animations. `None` until an enemy has been defeated.
     pub last_enemy_fate: Option<EnemyFate>,
+    /// Yields taken in a row since the last card was played. A player may not
+    /// yield once [rules wording removed], which
+    /// would otherwise stall the table forever. `#[serde(default)]` lets
+    /// pre-existing snapshots load.
+    #[serde(default)]
+    pub consecutive_yields: usize,
 }
 
 impl GameState {
@@ -330,6 +374,7 @@ impl GameState {
             solo_jesters,
             max_hand_size,
             last_enemy_fate: None,
+            consecutive_yields: 0,
         };
 
         state.next_enemy();
@@ -370,20 +415,22 @@ impl GameState {
         // that means before any cards are discarded).
 
         self.solo_jesters -= 1;
+        let refill_to = self.max_hand_size();
         let player = &mut self.players[0];
-        
-        // Discard hand
+
+        /* Discard the hand, then refill to the hand limit. */
         self.discard_pile.extend(player.hand.drain(..));
-        
-        // Draw new FULL hand (8 cards for solo)
-        for _ in 0..8 {
+        for _ in 0..refill_to {
             if let Some(card) = self.tavern_deck.pop() {
                 player.hand.push(card);
             }
         }
 
-        // If we were in discard phase, we might now be able to satisfy damage.
-        // We stay in current phase.
+        /* We stay in the current phase. If that phase is AwaitingDiscard the
+           fresh hand may still not cover the hit, and with the last Jester now
+           spent there is no legal move left - re-run the check so the game ends
+           instead of sitting in AwaitingDiscard forever. */
+        self.recheck_discard_satisfiable();
         self.check_solo_loss();
         Ok(())
     }
@@ -398,20 +445,13 @@ impl GameState {
         }
 
         let player = &mut self.players[self.current_player_index];
+        /* Validate up front so nothing is removed from the hand unless the
+           whole selection is sound. */
+        let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
+
         let mut played_cards = Vec::new();
-
-        let mut sorted_indices = card_indices.clone();
-        sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
-
         for idx in sorted_indices {
-            if idx >= player.hand.len() {
-                return Err("Invalid card index".to_string());
-            }
             played_cards.push(player.hand.remove(idx));
-        }
-
-        if played_cards.is_empty() {
-            return Err("No cards played".to_string());
         }
 
         if !self.is_valid_combo(&played_cards) {
@@ -421,32 +461,48 @@ impl GameState {
             return Err("Invalid card combination".to_string());
         }
 
-        if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
-            if let Some(ref mut enemy) = self.active_enemy {
-                let formerly_immune_suit = enemy.card.suit;
-                enemy.is_jester_active = true;
+        /* A card reached the table, so any run of yields is broken. */
+        self.consecutive_yields = 0;
 
-                // Retroactive powers for cards already on the table
-                if let Some(suit) = formerly_immune_suit {
-                    let cards_to_retrigger: Vec<Card> = self.played_cards.iter()
-                        .filter(|c| c.suit == Some(suit))
-                        .cloned()
-                        .collect();
-                    
-                    if !cards_to_retrigger.is_empty() {
-                        let attack_value = self.calculate_attack_value(&cards_to_retrigger);
-                        self.apply_suit_powers(attack_value, &[suit]);
-                    }
+        if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
+            let formerly_immune_suit = match self.active_enemy {
+                Some(ref mut enemy) => {
+                    enemy.is_jester_active = true;
+                    enemy.card.suit
                 }
+                None => None,
+            };
+
+            /* Only Spades apply retroactively. A spade's shield is an ongoing
+               reduction that starts counting the moment immunity drops, while
+               Hearts and Diamonds are one-shot effects that already resolved
+               (or were blocked) when those cards were played. Clubs doubling is
+               explicitly not retroactive either. */
+            if formerly_immune_suit == Some(Suit::Spades) {
+                let retro_shield: u32 = self.played_cards.iter()
+                    .filter(|c| c.suit == Some(Suit::Spades))
+                    .map(|c| c.attack_value())
+                    .sum();
+                self.shield_value += retro_shield as i32;
             }
+
             self.last_played = Some(played_cards.clone());
-            self.discard_pile.extend(played_cards);
-            if self.players.len() > 2 {
-                // The Jester's player chooses who takes the next turn. With only
-                // two players there is no choice to make, so play just passes on.
+
+            /* The Jester is played to the table like any other card. It joins
+               the play area and only reaches the discard pile when the enemy is
+               defeated - discarding it immediately let a Hearts heal shuffle it
+               back into the Tavern deck mid-fight. */
+            self.played_cards.extend(played_cards);
+
+            /* Rules: "[rules wording removed]". Any player - including
+               themselves - so the choice is real at every table size, and at a
+               two-player table it is "keep the turn or pass it". Never advance
+               the turn automatically.
+
+               Solo tables deal no Jesters, but guard the count anyway so a
+               one-player game can never be parked waiting on a choice. */
+            if self.players.len() > 1 {
                 self.phase = TurnPhase::AwaitingNextPlayer;
-            } else {
-                self.current_player_index = (self.current_player_index + 1) % self.players.len();
             }
             return Ok(());
         }
@@ -508,10 +564,17 @@ impl GameState {
             return Err("Can only yield during play phase".to_string());
         }
         
-        // Single player cannot yield (Rules)
+        /* Single player cannot yield (Rules). */
         if self.players.len() == 1 {
              return Err("Cannot yield in solo play".to_string());
         }
+
+        /* Rules: [rules wording removed] already yielded on
+           their last turn - the table would never make progress. */
+        if self.consecutive_yields + 1 >= self.players.len() {
+            return Err("Cannot yield: every other player has already yielded".to_string());
+        }
+        self.consecutive_yields += 1;
 
         self.enter_discard_phase()
     }
@@ -528,20 +591,9 @@ impl GameState {
                 damage_to_take: enemy_attack,
             };
             
-            // Check for Loss: Can the player satisfy damage?
-            // If they have Jesters, don't trigger loss yet! They might refresh.
-            if self.solo_jesters == 0 {
-                let player = &self.players[self.current_player_index];
-                let total_hand_value: i32 = player.hand.iter().map(|c| {
-                    match c.rank {
-                        Rank::Ace => 1, Rank::Joker => 0, Rank::Jack => 10, Rank::Queen => 15, Rank::King => 20, Rank::Number(n) => n as i32,
-                    }
-                }).sum();
-
-                if total_hand_value < enemy_attack {
-                    self.status = GameStatus::Lost(format!("Cannot satisfy {} damage.", enemy_attack));
-                }
-            }
+            /* Check for loss: can the player satisfy the damage? A solo player
+               holding a Jester can still refresh their hand, so hold off. */
+            self.recheck_discard_satisfiable();
         } else {
             // No damage to take, move to next player
             self.current_player_index = (self.current_player_index + 1) % self.players.len();
@@ -553,23 +605,15 @@ impl GameState {
     pub fn discard_cards(&mut self, card_indices: Vec<usize>) -> Result<(), String> {
         if let TurnPhase::AwaitingDiscard { damage_to_take } = self.phase {
             let player = &mut self.players[self.current_player_index];
+            /* Validate up front so a bad selection never disturbs the hand. */
+            let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
+
             let mut discarded_cards = Vec::new();
-
-            let mut sorted_indices = card_indices.clone();
-            sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
-
             for idx in sorted_indices {
-                if idx >= player.hand.len() {
-                    return Err("Invalid card index".to_string());
-                }
                 discarded_cards.push(player.hand.remove(idx));
             }
 
-            let discard_value: i32 = discarded_cards.iter().map(|c| {
-                match c.rank {
-                    Rank::Ace => 1, Rank::Joker => 0, Rank::Jack => 10, Rank::Queen => 15, Rank::King => 20, Rank::Number(n) => n as i32,
-                    }
-            }).sum();
+            let discard_value: i32 = discarded_cards.iter().map(|c| c.attack_value() as i32).sum();
             
             if discard_value < damage_to_take {
                 // Restore cards to hand if insufficient
@@ -587,6 +631,32 @@ impl GameState {
             Ok(())
         } else {
             Err("Not in discard phase".to_string())
+        }
+    }
+
+    /// Total value of a hand when discarded to soak damage (Ace 1, Jester 0,
+    /// face cards 10/15/20) - the same scale as [`Card::attack_value`].
+    fn hand_value(&self, player_index: usize) -> i32 {
+        self.players[player_index]
+            .hand
+            .iter()
+            .map(|c| c.attack_value() as i32)
+            .sum()
+    }
+
+    /// Ends the game if the current player is facing a hit they cannot pay and
+    /// has no Jester left to refresh with. Safe to call repeatedly; it does
+    /// nothing outside the discard phase.
+    fn recheck_discard_satisfiable(&mut self) {
+        let damage_to_take = match self.phase {
+            TurnPhase::AwaitingDiscard { damage_to_take } => damage_to_take,
+            _ => return,
+        };
+        if self.solo_jesters > 0 || self.status != GameStatus::InProgress {
+            return;
+        }
+        if self.hand_value(self.current_player_index) < damage_to_take {
+            self.status = GameStatus::Lost(format!("Cannot satisfy {} damage.", damage_to_take));
         }
     }
 
@@ -650,11 +720,9 @@ impl GameState {
 
     fn apply_suit_powers(&mut self, attack_value: u32, suits: &[Suit]) {
         let mut resolved_suits = suits.to_vec();
-        resolved_suits.sort_by(|a, b| match (a, b) {
-            (Suit::Hearts, Suit::Diamonds) => std::cmp::Ordering::Less,
-            (Suit::Diamonds, Suit::Hearts) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        });
+        /* Total order, so Hearts always resolves before Diamonds regardless of
+           which other suits were played alongside them. */
+        resolved_suits.sort_by_key(|&s| suit_resolution_order(s));
 
         for suit in resolved_suits {
             if self.is_enemy_immune(suit) {

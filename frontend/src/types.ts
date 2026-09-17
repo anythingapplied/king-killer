@@ -85,6 +85,9 @@ export interface GameState {
     solo_jesters: number;
     max_hand_size: number;
     last_enemy_fate: EnemyFate | null;
+    /** Yields taken in a row since the last card was played. Optional so a
+     *  snapshot written by an older server still type-checks. */
+    consecutive_yields?: number;
 }
 
 export type GameAction = 

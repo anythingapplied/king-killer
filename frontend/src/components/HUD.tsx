@@ -12,16 +12,22 @@ interface HUDProps {
     copySuccess: boolean;
     activeEffects: CombatEffect[];
     reconnecting: boolean;
+    muted: boolean;
+    currentTierEnemies: GameState['castle_deck'];
     onMenuClick: () => void;
+    onToggleMute: () => void;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
     onNewGameClick: () => void;
     onRename: (name: string) => void;
 }
 
+/** Solo play always starts with two Jesters, so the row always shows two slots. */
+const SOLO_JESTER_SLOTS = 2;
+
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting,
-    onMenuClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted,
+    onMenuClick, onToggleMute, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator ? undefined : gameState.players[myPlayerId];
@@ -52,16 +58,26 @@ const HUD: React.FC<HUDProps> = ({
         setEditingName(false);
     };
 
-    const currentTierEnemies = gameState.active_enemy ? 
-        gameState.castle_deck.filter(c => JSON.stringify(c.rank) === JSON.stringify(gameState.active_enemy?.card.rank))
-        : [];
-
     return (
-        <div data-testid="hud" className="z-[100] bg-slate-800/90 p-2 rounded-xl shadow-2xl border border-slate-700/50 backdrop-blur-md relative max-w-2xl mx-auto w-full flex-shrink-0">
-            <div className="flex justify-between items-center px-1 mb-1">
-                <div className="flex gap-1">
-                    <button onClick={onMenuClick} className="bg-slate-700 text-[8px] font-black px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
-                    <button onClick={onNewGameClick} className="bg-amber-700 text-[8px] font-black px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+        <div data-testid="hud" className="z-[100] bg-slate-800/90 p-1.5 sm:p-2 rounded-xl shadow-2xl border border-slate-700/50 backdrop-blur-md relative max-w-2xl mx-auto w-full flex-shrink-0">
+            <div className="flex justify-between items-center gap-1 px-1 mb-1">
+                <div className="flex gap-1 flex-shrink-0">
+                    <button onClick={onMenuClick} className="t-micro bg-slate-700 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
+                    <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+                    {/* Solo never chimes (the turn comes straight back), so the
+                        control would be dead weight on the tightest layout. */}
+                    {!isSolo && (
+                        <button
+                            onClick={onToggleMute}
+                            aria-pressed={muted}
+                            aria-label={muted ? 'Turn the turn chime on' : 'Mute the turn chime'}
+                            title={muted ? 'Turn chime muted — click to unmute' : 'Turn chime on — click to mute'}
+                            data-testid="mute-toggle"
+                            className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none"
+                        >
+                            {muted ? '🔕' : '🔔'}
+                        </button>
+                    )}
                 </div>
                 {editingName ? (
                     <input
@@ -71,66 +87,83 @@ const HUD: React.FC<HUDProps> = ({
                         onChange={(e) => setDraftName(e.target.value)}
                         onBlur={submitName}
                         onKeyDown={(e) => { if (e.key === 'Enter') submitName(); if (e.key === 'Escape') cancelName(); }}
-                        className="bg-blue-500 text-[9px] font-black px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl tracking-widest whitespace-nowrap w-32 text-center outline-none"
+                        className="t-label bg-blue-500 font-black px-3 sm:px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl tracking-widest whitespace-nowrap min-w-0 w-28 sm:w-32 text-center outline-none"
                         aria-label="Your name"
                     />
                 ) : (
-                    <button onClick={startEditName} title="Click to change your name" className="bg-blue-600 text-[9px] font-black px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl tracking-widest whitespace-nowrap hover:bg-blue-500 transition-colors cursor-pointer">
+                    <button onClick={startEditName} title="Click to change your name" className="t-label bg-blue-600 font-black px-3 sm:px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl tracking-widest whitespace-nowrap truncate min-w-0 hover:bg-blue-500 transition-colors cursor-pointer">
                         {isSpectator ? '👁 ' : ''}{displayMyName}
                     </button>
                 )}
-                <button onClick={onCopyIdClick} className={`flex items-center gap-1 px-3 py-1 rounded-full border text-[8px] font-mono transition-all ${copySuccess ? 'bg-green-900/40 border-green-500 text-green-300' : 'bg-slate-950 border-slate-800'}`}>
+                <button onClick={onCopyIdClick} className={`t-micro flex items-center gap-1 px-2 sm:px-3 py-1 rounded-full border font-mono whitespace-nowrap flex-shrink-0 transition-all ${copySuccess ? 'bg-green-900/40 border-green-500 text-green-300' : 'bg-slate-950 border-slate-800'}`}>
                     {copySuccess ? 'Copied!' : `🔗 Share`}
                 </button>
                 {reconnecting && (
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 animate-pulse" data-testid="reconnecting-indicator">
+                    <div className="flex items-center gap-1.5 px-2 sm:px-3 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 animate-pulse flex-shrink-0" data-testid="reconnecting-indicator">
                         <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                        <span className="text-[8px] font-black uppercase tracking-widest text-amber-300">Reconnecting…</span>
+                        <span className="t-micro font-black uppercase tracking-widest text-amber-300 hidden sm:inline">Reconnecting…</span>
                     </div>
                 )}
             </div>
 
-            <div className="flex justify-between items-center mb-1 px-2">
-                <div className="text-center w-16 relative" data-testid="tavern-slot">
-                    <div className="text-[7px] uppercase tracking-wider text-green-400 font-black">Tavern</div>
-                    <div className="text-lg font-black leading-none">🍺 {gameState.tavern_deck.length}</div>
+            <div className="flex justify-between items-center mb-1 px-1 sm:px-2 gap-2">
+                <div className="text-center w-12 sm:w-16 relative flex-shrink-0" data-testid="tavern-slot">
+                    <div className="t-micro uppercase tracking-wider text-green-400 font-black">Tavern</div>
+                    <div className="t-body font-black leading-none whitespace-nowrap">🍺 {gameState.tavern_deck.length}</div>
                     <AnimatePresence>
                         {activeEffects.filter(e => e.type === 'heal').map(e => (
-                            <motion.span key={e.id} initial={{ y: 0, opacity: 1 }} animate={{ y: -30, opacity: 0 }} exit={{ opacity: 0 }} className="absolute inset-x-0 -top-4 text-xs text-green-400 font-black">{e.value}</motion.span>
+                            <motion.span key={e.id} initial={{ y: 0, opacity: 1 }} animate={{ y: -30, opacity: 0 }} exit={{ opacity: 0 }} className="t-label absolute inset-x-0 -top-4 text-green-400 font-black">{e.value}</motion.span>
                         ))}
                     </AnimatePresence>
                 </div>
 
-                <div className="text-center flex-1 mx-4">
-                    <div className="text-[7px] uppercase tracking-wider text-red-400 font-black mb-0.5">Tier</div>
-                    <div className="flex justify-center gap-1.5 h-11">
-                        {currentTierEnemies.map((c) => <Card key={c.id} card={c} className="w-8 h-11 border border-slate-600 shadow-lg" />)}
+                <div className="text-center flex-1 min-w-0">
+                    <div className="t-micro uppercase tracking-wider text-red-400 font-black mb-0.5">Tier</div>
+                    <div className="flex justify-center gap-1 sm:gap-1.5 items-end" style={{ minHeight: 'calc(var(--thumb-w) * 7 / 5)' }}>
+                        {currentTierEnemies.map((c) => <Card key={c.id} card={c} className="thumb-card border border-slate-600 shadow-lg" />)}
                     </div>
                 </div>
 
-                <div className="text-center w-16 relative" data-testid="discard-slot">
-                    <div className="text-[7px] uppercase tracking-wider text-slate-400 font-black">Discard</div>
-                    <div className="text-xl font-black leading-none">🗑️ {gameState.discard_pile.length}</div>
+                <div className="text-center w-12 sm:w-16 relative flex-shrink-0" data-testid="discard-slot">
+                    <div className="t-micro uppercase tracking-wider text-slate-400 font-black">Discard</div>
+                    <div className="t-body font-black leading-none whitespace-nowrap">🗑️ {gameState.discard_pile.length}</div>
                 </div>
             </div>
 
             {isSolo && gameState.solo_jesters > 0 && (
                 <div className="flex justify-center gap-4 py-1 border-t border-slate-700/20">
-                    {[...Array(2)].map((_, i) => (
-                        <button key={i} disabled={!isMyTurn} onClick={onSoloJesterClick} className={`w-7 h-9 rounded border flex items-center justify-center text-sm transition-all ${i < gameState.solo_jesters ? `border-purple-500 bg-purple-900/40 shadow-lg ${mustRefreshSolo ? 'animate-bounce border-purple-400' : ''}` : 'border-slate-800 bg-slate-900 opacity-20 grayscale cursor-not-allowed'}`}>🃏</button>
-                    ))}
+                    {[...Array(SOLO_JESTER_SLOTS)].map((_, i) => {
+                        const available = i < gameState.solo_jesters;
+                        return (
+                            <button
+                                key={i}
+                                // A spent Jester looked disabled but was still clickable.
+                                disabled={!isMyTurn || !available}
+                                onClick={onSoloJesterClick}
+                                aria-label={available ? 'Discard your hand and refill' : 'Jester already used'}
+                                className={`w-6 h-8 sm:w-7 sm:h-9 rounded border flex items-center justify-center t-body transition-all ${available ? `border-purple-500 bg-purple-900/40 shadow-lg ${mustRefreshSolo ? 'animate-bounce border-purple-400' : ''}` : 'border-slate-800 bg-slate-900 opacity-20 grayscale cursor-not-allowed'}`}
+                            >
+                                🃏
+                            </button>
+                        );
+                    })}
                 </div>
             )}
 
-            <div className="flex gap-2 justify-center flex-wrap border-t border-slate-700/30 pt-1.5">
+            <div className="flex gap-1.5 sm:gap-2 justify-center flex-wrap border-t border-slate-700/30 pt-1.5">
                 {gameState.players.map((p, i) => {
                     const displayName = p.name || `P${i + 1}`;
+                    // Diamonds draw starts with the current player, so that's
+                    // where the +N floats. (This used to compute the current
+                    // index the long way round and compare it to itself.)
+                    const isDrawer = gameState.current_player_index === i;
                     return (
-                        <div key={i} className={`px-2 py-0.5 rounded-full text-[8px] font-black border transition-all flex items-center gap-1 relative ${gameState.current_player_index === i ? 'bg-blue-600 border-blue-400 shadow-lg scale-105' : 'bg-slate-900/50 border-slate-700 opacity-50'}`}>
-                            {myPlayerId === i && <span className="w-1 h-1 bg-green-400 rounded-full animate-pulse"></span>} {displayName}: {p.hand.length}
+                        <div key={i} className={`t-micro px-2 py-0.5 rounded-full font-black border transition-all flex items-center gap-1 relative max-w-[8rem] ${gameState.current_player_index === i ? 'bg-blue-600 border-blue-400 shadow-lg scale-105' : 'bg-slate-900/50 border-slate-700 opacity-50'}`}>
+                            {myPlayerId === i && <span className="w-1 h-1 bg-green-400 rounded-full animate-pulse flex-shrink-0"></span>}
+                            <span className="truncate">{displayName}</span>: {p.hand.length}
                             <AnimatePresence>
-                                {activeEffects.filter(e => e.type === 'draw' && (gameState.current_player_index + gameState.players.length) % gameState.players.length === i).map(e => (
-                                    <motion.span key={e.id} initial={{ y: 0, opacity: 1 }} animate={{ y: -20, opacity: 0 }} exit={{ opacity: 0 }} className="absolute inset-x-0 -top-4 text-[10px] text-blue-400 font-black text-center">{e.value}</motion.span>
+                                {isDrawer && activeEffects.filter(e => e.type === 'draw').map(e => (
+                                    <motion.span key={e.id} initial={{ y: 0, opacity: 1 }} animate={{ y: -20, opacity: 0 }} exit={{ opacity: 0 }} className="t-label absolute inset-x-0 -top-4 text-blue-400 font-black text-center">{e.value}</motion.span>
                                 ))}
                             </AnimatePresence>
                         </div>

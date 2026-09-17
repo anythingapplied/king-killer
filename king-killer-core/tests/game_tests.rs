@@ -36,6 +36,10 @@ fn test_diamond_draw_order() {
     // Fixed seed: the random starting player / deal must not affect this test,
     // and the draw-order assertions stay deterministic across every run.
     let mut state = GameState::new_with_seed(999, 2);
+    /* Pin the enemy as well. Its suit is incidental here, but a Jack of
+       Diamonds is immune to the very draw being asserted on - so don't leave
+       that riding on which seed happens to be picked. */
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 299)));
     state.players[0].hand = vec![
         Card::new(Suit::Diamonds, Rank::Number(3), 200),
         Card::new(Suit::Spades, Rank::Number(2), 201),
@@ -246,7 +250,7 @@ fn test_choose_next_player_rejected_outside_jester_choice() {
 }
 
 #[test]
-fn test_jester_two_player_auto_advances() {
+fn test_jester_two_player_still_chooses() {
     let mut state = GameState::new(2);
     state.players[0].hand = vec![Card::joker(730)];
     state.current_player_index = 0;
@@ -254,7 +258,175 @@ fn test_jester_two_player_auto_advances() {
 
     state.play_cards(vec![0]).unwrap();
 
-    // No meaningful choice with two players: play simply passes on.
+    /* Two players is still a choice - keep the turn or pass it - so the turn
+       must never advance on its own. */
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+    assert_eq!(state.current_player_index, 0);
+
+    /* Keeping the turn is a legal choice. */
+    state.choose_next_player(0).unwrap();
+    assert_eq!(state.current_player_index, 0);
     assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+}
+
+#[test]
+fn test_jester_two_player_can_pass_the_turn() {
+    let mut state = GameState::new(2);
+    state.players[0].hand = vec![Card::joker(740)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+    state.choose_next_player(1).unwrap();
     assert_eq!(state.current_player_index, 1);
+    assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+}
+
+#[test]
+fn test_jester_sits_in_the_play_area_until_the_enemy_dies() {
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 750)));
+    state.players[0].hand = vec![
+        Card::joker(751),
+        Card::new(Suit::Spades, Rank::King, 752),
+    ];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.discard_pile = Vec::new();
+
+    state.play_cards(vec![0]).unwrap();
+    /* On the table, not in the discard pile, so a Hearts heal cannot recycle
+       it back into the Tavern deck while the fight is still running. */
+    assert_eq!(state.played_cards.len(), 1);
+    assert!(state.discard_pile.is_empty());
+
+    state.choose_next_player(0).unwrap();
+    state.play_cards(vec![0]).unwrap(); // King: exactly 20, kills the Jack
+
+    /* Defeat sweeps the whole play area, Jester included, into the discard. */
+    assert!(state.played_cards.is_empty());
+    assert!(state.discard_pile.iter().any(|c| c.rank == Rank::Joker));
+}
+
+#[test]
+fn test_hearts_resolve_before_diamonds_in_a_four_suit_combo() {
+    /* All four suits can hit the table at once (four 2s = 8). Hearts must heal
+       into the Tavern deck before Diamonds draws out of it, whatever order the
+       cards happened to sit in the hand. */
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Clubs, Rank::Jack, 800)));
+    /* Cards leave the hand highest-index-first, so this ordering hands the
+       resolver [Diamonds, Spades, Clubs, Hearts] - Diamonds ahead of Hearts. */
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(2), 801),
+        Card::new(Suit::Clubs, Rank::Number(2), 802),
+        Card::new(Suit::Spades, Rank::Number(2), 803),
+        Card::new(Suit::Diamonds, Rank::Number(2), 804),
+    ];
+    state.players[1].hand = vec![Card::new(Suit::Hearts, Rank::Number(10), 805); 7];
+    state.tavern_deck = Vec::new();
+    state.discard_pile = vec![Card::new(Suit::Spades, Rank::Number(9), 806); 8];
+
+    state.play_cards(vec![0, 1, 2, 3]).unwrap();
+
+    /* Hearts moves all 8 discards under the Tavern deck, then Diamonds draws 8
+       out of it - the solo drawer fills to the 7-card limit and 1 is left.
+       Resolved the other way round the deck is empty when Diamonds runs and the
+       player draws nothing at all. */
+    assert_eq!(state.discard_pile.len(), 0);
+    assert_eq!(state.players[0].hand.len(), 7);
+    assert_eq!(state.tavern_deck.len(), 1);
+}
+
+#[test]
+fn test_duplicate_indices_are_rejected() {
+    let mut state = GameState::new(2);
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(5), 810),
+        Card::new(Suit::Spades, Rank::Number(5), 811),
+        Card::new(Suit::Clubs, Rank::Number(9), 812),
+    ];
+    let before = state.players[0].hand.clone();
+
+    assert!(state.play_cards(vec![0, 0]).is_err());
+    /* The hand must be untouched by a rejected play. */
+    assert_eq!(state.players[0].hand, before);
+}
+
+#[test]
+fn test_out_of_range_index_leaves_hand_untouched() {
+    let mut state = GameState::new(2);
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(5), 820),
+        Card::new(Suit::Spades, Rank::Number(5), 821),
+    ];
+    assert!(state.play_cards(vec![0, 7]).is_err());
+    assert_eq!(state.players[0].hand.len(), 2);
+}
+
+#[test]
+fn test_jester_does_not_retroactively_heal_or_draw() {
+    /* Only Spades apply retroactively. A Hearts enemy blocked the heal when the
+       heart was played, and playing a Jester later must not rewind it. */
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 830)));
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(5), 831),
+        Card::new(Suit::Spades, Rank::Number(10), 832),
+    ];
+    state.players[1].hand = vec![Card::joker(833)];
+    state.discard_pile = vec![Card::new(Suit::Clubs, Rank::Number(4), 834); 6];
+
+    state.play_cards(vec![0]).unwrap();
+    state.discard_cards(vec![0]).unwrap();
+    let discard_after_play = state.discard_pile.len();
+    let tavern_after_play = state.tavern_deck.len();
+
+    state.play_cards(vec![0]).unwrap();
+
+    /* Nothing is healed back: the discard pile and the Tavern deck are both
+       untouched. The Jester goes to the play area, not the discard. */
+    assert_eq!(state.discard_pile.len(), discard_after_play);
+    assert_eq!(state.tavern_deck.len(), tavern_after_play);
+    assert!(state.played_cards.iter().any(|c| c.rank == Rank::Joker));
+}
+
+#[test]
+fn test_cannot_yield_when_everyone_else_already_has() {
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 840)));
+    for p in state.players.iter_mut() {
+        p.hand = vec![Card::new(Suit::Spades, Rank::Number(10), 841); 4];
+    }
+
+    state.yield_turn().unwrap();
+    state.discard_cards(vec![0]).unwrap();
+    state.yield_turn().unwrap();
+    state.discard_cards(vec![0]).unwrap();
+
+    /* Two yields in a row in a three-player game: the third player is stuck
+       playing a card. */
+    assert!(state.yield_turn().is_err());
+
+    /* Playing a card clears the streak, so yielding is legal again. */
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.consecutive_yields, 0);
+}
+
+#[test]
+fn test_solo_jester_on_an_unpayable_hit_ends_the_game() {
+    /* Spending the last Jester during the discard step and still coming up
+       short must end the game rather than leave it stuck in AwaitingDiscard. */
+    let mut state = GameState::new(1);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::King, 850)));
+    state.solo_jesters = 1;
+    state.players[0].hand = vec![Card::new(Suit::Spades, Rank::Number(2), 851)];
+    state.tavern_deck = vec![Card::new(Suit::Spades, Rank::Number(2), 852); 3];
+
+    state.play_cards(vec![0]).unwrap();
+    assert!(matches!(state.phase, TurnPhase::AwaitingDiscard { .. }));
+    assert_eq!(state.status, GameStatus::InProgress);
+
+    state.use_solo_jester().unwrap();
+    assert!(matches!(state.status, GameStatus::Lost(_)));
 }

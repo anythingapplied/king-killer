@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember } from '../types';
 import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
-import { playBellChime } from '../sound';
+import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
+import { shouldRingTurnChime } from '../turnChime';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
@@ -22,6 +23,17 @@ export interface FlightBox {
     width: number;
     height: number;
 }
+
+/**
+ * A seat restored from localStorage may be garbage (hand-edited, or left over
+ * from a bigger table that has since been reset), and `players[NaN]` blows up
+ * the whole board. Only ever adopt a seat that parses to a real index.
+ */
+const parseSeat = (raw: string | null): number | null => {
+  if (raw === null) return null;
+  const seat = Number.parseInt(raw, 10);
+  return Number.isInteger(seat) && seat >= 0 ? seat : null;
+};
 
 export interface DefeatFlight {
     id: number; // uniquely identifies this defeat
@@ -52,6 +64,7 @@ export const useGameLogic = () => {
   const backoffRef = useRef(500);
   const lastGameStateJsonRef = useRef<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  const [muted, setMutedState] = useState<boolean>(() => isMuted());
   // Games whose join request is currently in flight. Joining claims a seat on
   // the server, so a duplicate (React StrictMode double-invokes the URL-join
   // effect, and a user can press Enter twice) must never fire two join calls.
@@ -59,6 +72,13 @@ export const useGameLogic = () => {
   // Detects the transition into "my turn" so the chime only rings when the
   // turn actually arrives, not on the initial load (e.g. you created the game).
   const wasMyTurnRef = useRef<boolean | null>(null);
+  // Pending activeEffects expiry timers, so they don't fire after unmount.
+  const effectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  useEffect(() => () => {
+    effectTimersRef.current.forEach(clearTimeout);
+    effectTimersRef.current = [];
+  }, []);
 
   const isMyTurn = localGameState?.current_player_index === myPlayerId;
   const isSolo = localGameState?.players.length === 1;
@@ -66,16 +86,18 @@ export const useGameLogic = () => {
   // A member seated beyond the active game's player count watches the game.
   const isSpectator = localGameState !== null && myPlayerId !== null && myPlayerId >= localGameState.players.length;
 
-  // Ring the bell only when a turn actually arrives mid-game. Solo play is
-  // excluded: the turn returns to you after every action, so each return would
-  // just be noise. prev === null (first state evaluation) is also skipped so
-  // joining/resuming into a game where it's already our turn stays silent.
+  // Audio can only be started from a user gesture, and the chime fires from a
+  // state update — never a gesture. Arm the context on the first interaction
+  // with the page so the chime can actually sound later.
+  useEffect(() => installAudioUnlock(), []);
+
+  // Ring the bell when the turn arrives, so the next player knows they're up
+  // without watching the screen. See `shouldRingTurnChime` for the rule.
   useEffect(() => {
-    if (isSolo || !localGameState || myPlayerId === null) return;
+    if (!localGameState || myPlayerId === null) return;
     const prev = wasMyTurnRef.current;
     wasMyTurnRef.current = isMyTurn;
-    if (prev === null || prev === isMyTurn) return;
-    if (isMyTurn) playBellChime();
+    if (shouldRingTurnChime(prev, isMyTurn, isSolo)) playBellChime();
   }, [localGameState, myPlayerId, isMyTurn, isSolo]);
 
   // Flash the tab title while it's our turn and the tab is unfocused, so a
@@ -150,7 +172,11 @@ export const useGameLogic = () => {
         }
         if (effects.length > 0) {
             setActiveEffects(prevEffects => [...prevEffects, ...effects]);
-            setTimeout(() => setActiveEffects(prevEffects => prevEffects.filter(e => !effects.find(ne => ne.id === e.id))), 1200);
+            const timer = setTimeout(() => {
+                setActiveEffects(prevEffects => prevEffects.filter(e => !effects.find(ne => ne.id === e.id)));
+                effectTimersRef.current = effectTimersRef.current.filter(t => t !== timer);
+            }, 1200);
+            effectTimersRef.current.push(timer);
         }
     }
     
@@ -215,9 +241,23 @@ export const useGameLogic = () => {
   // consumes one seat.
   useEffect(() => {
     if (!gameId || myPlayerId !== null) return;
-    const savedSeat = localStorage.getItem(`seat_${gameId}`);
-    if (savedSeat !== null) setMyPlayerId(parseInt(savedSeat));
+    const savedSeat = parseSeat(localStorage.getItem(`seat_${gameId}`));
+    if (savedSeat !== null) setMyPlayerId(savedSeat);
   }, [gameId, myPlayerId]);
+
+  // connectWebSocket and scheduleReconnect call each other. Routing the back
+  // edge through a ref lets scheduleReconnect be declared first, so it is no
+  // longer used before it is declared — which previously only worked because
+  // `onclose` happens to fire asynchronously, well after the declaration ran.
+  const connectRef = useRef<() => void>(() => {});
+
+  const scheduleReconnect = useCallback(() => {
+    if (intentionalCloseRef.current) return;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      connectRef.current();
+    }, backoffRef.current);
+  }, []);
 
   const connectWebSocket = useCallback(() => {
     const id = gameId;
@@ -252,12 +292,22 @@ export const useGameLogic = () => {
       setRoster(payload.members);
     };
     socket.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg && msg.type === 'State') {
-        onState(msg.payload);
+      // A malformed frame must not take the handler (and the socket) down.
+      let msg: unknown;
+      try {
+        msg = JSON.parse(event.data);
+      } catch {
         return;
       }
-      setGameState(msg);
+      if (msg && typeof msg === 'object' && (msg as { type?: string }).type === 'State') {
+        onState((msg as { payload: RoomSnapshot }).payload);
+        return;
+      }
+      // Untagged frame: only accept it if it actually looks like a snapshot,
+      // rather than casting whatever arrived straight into state.
+      if (msg && typeof msg === 'object' && 'game' in msg && 'members' in msg) {
+        onState(msg as RoomSnapshot);
+      }
     };
     socket.onclose = () => {
       if (intentionalCloseRef.current) return;
@@ -268,15 +318,11 @@ export const useGameLogic = () => {
       backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
       scheduleReconnect();
     };
-  }, [gameId]);
+  }, [gameId, scheduleReconnect]);
 
-  const scheduleReconnect = () => {
-    if (intentionalCloseRef.current) return;
-    reconnectTimerRef.current = setTimeout(() => {
-      reconnectTimerRef.current = null;
-      connectWebSocket();
-    }, backoffRef.current);
-  };
+  useEffect(() => {
+    connectRef.current = connectWebSocket;
+  }, [connectWebSocket]);
 
   useEffect(() => {
     if (gameId) {
@@ -285,6 +331,7 @@ export const useGameLogic = () => {
       bufferedActionsRef.current = [];
       backoffRef.current = 500;
       lastGameStateJsonRef.current = null;
+      wasMyTurnRef.current = null;
       connectWebSocket();
     }
     return () => {
@@ -343,19 +390,34 @@ export const useGameLogic = () => {
 
   const damageNeeded = useMemo(() => {
     if (typeof localGameState?.phase === 'object' && 'AwaitingDiscard' in localGameState.phase) {
-        return (localGameState.phase as any).AwaitingDiscard.damage_to_take;
+        return localGameState.phase.AwaitingDiscard.damage_to_take;
     }
     return 0;
   }, [localGameState]);
 
   const discardRemaining = Math.max(0, damageNeeded - currentDiscardValue);
 
+  // A seat that no longer exists on this table (e.g. a 4-player game was reset
+  // to 2) must not be used to index into `players`.
+  const seatedPlayer = (myPlayerId !== null && localGameState?.players[myPlayerId]) || null;
+
+  /**
+   * Rules: a player may not yield once [rules wording removed]. The server enforces it too, but it rejects silently, so
+   * the button has to know.
+   */
+  const canYield = useMemo(() => {
+    if (!localGameState) return false;
+    const playerCount = localGameState.players.length;
+    if (playerCount <= 1) return false;
+    return (localGameState.consecutive_yields ?? 0) + 1 < playerCount;
+  }, [localGameState]);
+
   const isImmuneWarning = useMemo(() => {
     if (!localGameState?.active_enemy || selectedIndices.length === 0) return false;
     const enemySuit = localGameState.active_enemy.card.suit;
     if (!enemySuit || localGameState.active_enemy.is_jester_active) return false;
-    return selectedIndices.some(idx => localGameState.players[myPlayerId!].hand[idx]?.suit === enemySuit);
-  }, [selectedIndices, localGameState, myPlayerId]);
+    return selectedIndices.some(idx => seatedPlayer?.hand[idx]?.suit === enemySuit);
+  }, [selectedIndices, localGameState, seatedPlayer]);
 
   const createGame = async (numPlayers: number) => {
     const playerName = localStorage.getItem('kingkiller_player_name') || '';
@@ -364,6 +426,12 @@ export const useGameLogic = () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ num_players: numPlayers, player_name: playerName || undefined }),
     });
+    if (!res.ok) {
+      // Without this the app set gameId to undefined and bounced back to the
+      // menu with no explanation.
+      alert('Could not start a game. Please try again.');
+      return;
+    }
     const data = await res.json();
     setGameId(data.id); setGameState(data.state.game); setRoster(data.state.members); setMyPlayerId(0);
     localStorage.setItem(`seat_${data.id}`, "0");
@@ -401,12 +469,12 @@ export const useGameLogic = () => {
       const snap = await res.json() as RoomSnapshot;
 
       // A seat from an earlier session (resume case) skips the join call.
-      const savedSeat = localStorage.getItem(`seat_${id}`);
+      const savedSeat = parseSeat(localStorage.getItem(`seat_${id}`));
       if (savedSeat !== null) {
         setGameId(id);
         setGameState(snap.game);
         setRoster(snap.members);
-        setMyPlayerId(parseInt(savedSeat));
+        setMyPlayerId(savedSeat);
         setUrlGameId(id);
         return;
       }
@@ -460,6 +528,16 @@ export const useGameLogic = () => {
     if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
   };
 
+  const toggleMute = useCallback(() => {
+    const next = !isMuted();
+    setMuted(next);
+    setMutedState(next);
+    // Unmuting happens inside a click, which is a real user gesture: ring once
+    // so the player hears the level and the audio context is armed at the same
+    // moment, rather than on some later turn change.
+    if (!next) playBellChime();
+  }, []);
+
   const chooseNextPlayer = (index: number) => {
     sendAction({ type: 'ChooseNextPlayer', payload: { index } });
   };
@@ -512,7 +590,7 @@ export const useGameLogic = () => {
 
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-    defeatFlight, finishDefeatFlight, reconnecting,
+    defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute,
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
     isChoosingNextPlayer,
     createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer

@@ -303,6 +303,11 @@ struct GameResponse {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", content = "payload")]
 enum GameAction {
+    /// Keepalive from the client, sent every 30s. Deliberately does NOT refresh
+    /// the idle timer: the server is meant to scale to zero while nobody is
+    /// actually playing, and the client reconnects transparently. It only keeps
+    /// the socket itself from being dropped by an intermediary.
+    Ping,
     PlayCards { indices: Vec<usize> },
     Yield,
     DiscardCards { indices: Vec<usize> },
@@ -452,7 +457,15 @@ async fn handle_socket(socket: WebSocket, id: String, state: AppState) {
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(action) = serde_json::from_str::<GameAction>(&text) {
+                // A keepalive carries no state change: no history row, no
+                // persist, no broadcast. Without this arm the frame failed to
+                // parse and the client's keepalive did nothing at all.
+                if matches!(action, GameAction::Ping) {
+                    continue;
+                }
+
                 let action_type = match &action {
+                    GameAction::Ping => "ping",
                     GameAction::PlayCards { .. } => "play_cards",
                     GameAction::Yield => "yield",
                     GameAction::DiscardCards { .. } => "discard_cards",
