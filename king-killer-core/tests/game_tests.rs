@@ -546,3 +546,44 @@ fn test_game_log_is_capped() {
     /* The newest entries are the ones kept. */
     assert_eq!(state.game_log.last().map(|e| e.kind), Some(LogKind::Yielded));
 }
+
+#[test]
+fn test_a_rejected_play_leaves_the_hand_untouched_and_in_order() {
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 900)));
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    let hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(2), 901),
+        Card::new(Suit::Spades, Rank::Number(7), 902),
+        Card::new(Suit::Clubs, Rank::Number(9), 903),
+        Card::new(Suit::Diamonds, Rank::King, 904),
+    ];
+    state.players[0].hand = hand.clone();
+
+    /* 7 and 9 are neither a set nor an Ace pairing. */
+    assert!(state.play_cards(vec![1, 2]).is_err());
+    /* Same cards, same order - not appended to the end. */
+    assert_eq!(state.players[0].hand, hand);
+}
+
+#[test]
+fn test_a_rejected_discard_neither_reorders_the_hand_nor_logs() {
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::King, 910)));
+    state.current_player_index = 0;
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(2), 911),
+        Card::new(Suit::Hearts, Rank::Number(3), 912),
+        Card::new(Suit::Hearts, Rank::Number(10), 913),
+    ];
+    state.phase = TurnPhase::AwaitingDiscard { damage_to_take: 20 };
+    let hand = state.players[0].hand.clone();
+    let log_len = state.game_log.len();
+
+    /* A single 2 nowhere near covers 20. */
+    assert!(state.discard_cards(vec![0]).is_err());
+    assert_eq!(state.players[0].hand, hand);
+    /* A rejected discard never happened, so it must not appear in the log. */
+    assert_eq!(state.game_log.len(), log_len);
+}

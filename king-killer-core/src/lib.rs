@@ -79,6 +79,37 @@ fn validate_hand_indices(indices: &[usize], hand_len: usize) -> Result<Vec<usize
     Ok(sorted)
 }
 
+/// Hand limit by table size (8/7/6/5 for 1-4 players).
+///
+/// Both the deal and [`GameState::hand_limit`] go through this, so the two
+/// can't drift apart - they previously each carried their own copy of the
+/// table, and a field named `max_hand_size` sitting next to a method of the
+/// same name made the duplication easy to miss.
+fn hand_limit_for(player_count: u32) -> usize {
+    match player_count {
+        1 => 8,
+        2 => 7,
+        3 => 6,
+        _ => 5,
+    }
+}
+
+/// Removes `sorted_desc` (validated, highest index first) from a hand and
+/// returns the cards in that order.
+fn take_cards(hand: &mut Vec<Card>, sorted_desc: &[usize]) -> Vec<Card> {
+    sorted_desc.iter().map(|&idx| hand.remove(idx)).collect()
+}
+
+/// Puts cards taken by [`take_cards`] back exactly where they came from.
+///
+/// Appending them instead would silently reorder the hand every time a play or
+/// discard was rejected.
+fn restore_cards(hand: &mut Vec<Card>, sorted_desc: &[usize], cards: Vec<Card>) {
+    for (&idx, card) in sorted_desc.iter().rev().zip(cards.into_iter().rev()) {
+        hand.insert(idx, card);
+    }
+}
+
 /// Fisher-Yates shuffle using [`GameRng`].
 fn shuffle<T>(slice: &mut [T], rng: &mut GameRng) {
     for i in (1..slice.len()).rev() {
@@ -146,9 +177,6 @@ impl Card {
         }
     }
 
-    pub fn health_value(&self) -> u32 {
-        self.attack_value()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,13 +189,19 @@ pub struct Enemy {
 }
 
 impl Enemy {
+    /// # Panics
+    /// Panics if `card` is not a Jack, Queen or King. Enemies only ever come
+    /// from the castle deck, which holds face cards exclusively.
     pub fn new(card: Card) -> Self {
-        let (health, attack) = match card.rank {
-            Rank::Jack => (20, 10),
-            Rank::Queen => (30, 15),
-            Rank::King => (40, 20),
-            _ => panic!("Invalid enemy rank"),
+        let health = match card.rank {
+            Rank::Jack => 20,
+            Rank::Queen => 30,
+            Rank::King => 40,
+            _ => panic!("Invalid enemy rank: enemies must be face cards"),
         };
+        /* An enemy's attack is just the card's own value, so don't keep a
+           second copy of that table here. */
+        let attack = card.attack_value() as i32;
 
         Self {
             card,
@@ -330,6 +364,9 @@ impl GameState {
 
     /// Create a game deal from an explicit seed. Identical deals for identical
     /// seeds — the basis for replaying `game_history` from a stored seed.
+    /// # Panics
+    /// Panics unless `num_players` is 1-4. Callers taking a player count from
+    /// untrusted input must validate or clamp it first.
     pub fn new_with_seed(seed: u64, num_players: u32) -> Self {
         let mut rng = GameRng::new(seed);
         let mut next_id = 1;
@@ -381,13 +418,14 @@ impl GameState {
             next_id += 1;
         }
 
-        let (jesters, max_hand_size, solo_jesters) = match num_players {
-            1 => (0, 8, 2),
-            2 => (0, 7, 0),
-            3 => (1, 6, 0),
-            4 => (2, 5, 0),
-            _ => panic!("Invalid number of players"),
+        let (jesters, solo_jesters) = match num_players {
+            1 => (0, 2),
+            2 => (0, 0),
+            3 => (1, 0),
+            4 => (2, 0),
+            _ => panic!("Invalid number of players: King Killer is a 1-4 player game"),
         };
+        let max_hand_size = hand_limit_for(num_players);
 
         for _ in 0..jesters {
             tavern_deck.push(Card::joker(next_id));
@@ -447,14 +485,11 @@ impl GameState {
 
     pub fn next_enemy(&mut self) {
         if let Some(card) = self.castle_deck.pop() {
+            self.log(None, LogKind::EnemyRevealed, vec![card.clone()]);
             self.active_enemy = Some(Enemy::new(card));
             self.shield_value = 0;
             self.played_cards = Vec::new();
             self.play_log = Vec::new();
-            let revealed = self.active_enemy.as_ref().map(|e| e.card.clone());
-            if let Some(card) = revealed {
-                self.log(None, LogKind::EnemyRevealed, vec![card]);
-            }
             self.phase = TurnPhase::AwaitingPlay;
         } else {
             self.status = GameStatus::Won;
@@ -475,7 +510,7 @@ impl GameState {
 
         self.solo_jesters -= 1;
         self.log(Some(self.current_player_index), LogKind::Jester, Vec::new());
-        let refill_to = self.max_hand_size();
+        let refill_to = self.hand_limit();
         let player = &mut self.players[0];
 
         /* Discard the hand, then refill to the hand limit. */
@@ -509,15 +544,11 @@ impl GameState {
            whole selection is sound. */
         let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
 
-        let mut played_cards = Vec::new();
-        for idx in sorted_indices {
-            played_cards.push(player.hand.remove(idx));
-        }
+        let played_cards = take_cards(&mut player.hand, &sorted_indices);
 
         if !self.is_valid_combo(&played_cards) {
-            // Restore cards to hand if invalid
             let player = &mut self.players[self.current_player_index];
-            player.hand.extend(played_cards);
+            restore_cards(&mut player.hand, &sorted_indices, played_cards);
             return Err("Invalid card combination".to_string());
         }
 
@@ -593,7 +624,11 @@ impl GameState {
         self.played_cards.extend(played_cards);
 
         if enemy_defeated {
-            let enemy = self.active_enemy.take().unwrap();
+            /* `enemy_defeated` is only ever set inside the `Some` arm above, so
+               this cannot be None - but say so in code rather than unwrapping. */
+            let Some(enemy) = self.active_enemy.take() else {
+                return Err("Active enemy disappeared mid-turn".to_string());
+            };
             let exact_kill = enemy.current_health == 0;
             self.last_enemy_fate = Some(if exact_kill { EnemyFate::Tavern } else { EnemyFate::Discard });
             /* Log before the card is moved out into a pile. */
@@ -682,22 +717,17 @@ impl GameState {
             /* Validate up front so a bad selection never disturbs the hand. */
             let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
 
-            let mut discarded_cards = Vec::new();
-            for idx in sorted_indices {
-                discarded_cards.push(player.hand.remove(idx));
-            }
-
-            self.log(Some(self.current_player_index), LogKind::Discarded, discarded_cards.clone());
-
+            let discarded_cards = take_cards(&mut player.hand, &sorted_indices);
             let discard_value: i32 = discarded_cards.iter().map(|c| c.attack_value() as i32).sum();
-            
+
             if discard_value < damage_to_take {
-                // Restore cards to hand if insufficient
                 let player = &mut self.players[self.current_player_index];
-                player.hand.extend(discarded_cards);
+                restore_cards(&mut player.hand, &sorted_indices, discarded_cards);
                 return Err(format!("Insufficient discard value: {} < {}", discard_value, damage_to_take));
             } else {
-                // Damage satisfied
+                /* Only log once the discard actually stands - logging before the
+                   sufficiency check wrote a phantom entry for every rejection. */
+                self.log(Some(self.current_player_index), LogKind::Discarded, discarded_cards.clone());
                 self.last_discarded = Some(discarded_cards.clone());
                 self.discard_pile.extend(discarded_cards);
                 self.current_player_index = (self.current_player_index + 1) % self.players.len();
@@ -837,7 +867,7 @@ impl GameState {
                         let mut found_drawer = false;
                         for i in 0..player_count {
                             let idx = (self.current_player_index + drawer_offset + i) % player_count;
-                            let max_hand = self.max_hand_size();
+                            let max_hand = self.hand_limit();
                             if self.players[idx].hand.len() < max_hand {
                                 if let Some(card) = self.tavern_deck.pop() {
                                     self.players[idx].hand.push(card);
@@ -858,13 +888,9 @@ impl GameState {
         }
     }
 
-    fn max_hand_size(&self) -> usize {
-        match self.players.len() {
-            1 => 8,
-            2 => 7,
-            3 => 6,
-            4 => 5,
-            _ => 0,
-        }
+    /// Named distinctly from the `max_hand_size` field so `self.max_hand_size`
+    /// and `self.hand_limit()` can no longer be confused for one another.
+    fn hand_limit(&self) -> usize {
+        hand_limit_for(self.players.len() as u32)
     }
 }
