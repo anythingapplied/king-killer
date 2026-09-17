@@ -19,34 +19,34 @@ const suitPaths = {
     CLUBS: `
     <g transform="translate(100, 195) scale(1.2) translate(-50, -50)">
         <g transform="translate(5, 5) rotate(45, 45, 45)">
-            <path fill="#1e293b" stroke="black" stroke-width="2" d="M45,2 L57,30 L53,70 L37,70 L33,30 Z"/>
-            <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M45,10 L50,30 L48,65 L42,65 L40,30 Z"/>
-            <path fill="#1e293b" stroke="black" stroke-width="2" d="M25,68 L65,68 L70,76 L20,76 Z"/>
-            <rect fill="#1e293b" stroke="black" stroke-width="2" x="40" y="76" width="10" height="12"/>
-            <circle fill="#1e293b" stroke="black" stroke-width="2" cx="45" cy="92" r="6"/>
+            <path fill="#16a34a" stroke="black" stroke-width="2" d="M45,2 L57,30 L53,70 L37,70 L33,30 Z"/>
+            <path fill="#4ade80" opacity="0.5" stroke="black" stroke-width="0.5" d="M45,10 L50,30 L48,65 L42,65 L40,30 Z"/>
+            <path fill="#16a34a" stroke="black" stroke-width="2" d="M25,68 L65,68 L70,76 L20,76 Z"/>
+            <rect fill="#16a34a" stroke="black" stroke-width="2" x="40" y="76" width="10" height="12"/>
+            <circle fill="#16a34a" stroke="black" stroke-width="2" cx="45" cy="92" r="6"/>
         </g>
         <g transform="translate(-5, 5) rotate(-45, 55, 45)">
-            <path fill="#1e293b" stroke="black" stroke-width="2" d="M55,2 L67,30 L63,70 L47,70 L43,30 Z"/>
-            <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M55,10 L60,30 L58,65 L52,65 L50,30 Z"/>
-            <path fill="#1e293b" stroke="black" stroke-width="2" d="M35,68 L75,68 L80,76 L30,76 Z"/>
-            <rect fill="#1e293b" stroke="black" stroke-width="2" x="50" y="76" width="10" height="12"/>
-            <circle fill="#1e293b" stroke="black" stroke-width="2" cx="55" cy="92" r="6"/>
+            <path fill="#16a34a" stroke="black" stroke-width="2" d="M55,2 L67,30 L63,70 L47,70 L43,30 Z"/>
+            <path fill="#4ade80" opacity="0.5" stroke="black" stroke-width="0.5" d="M55,10 L60,30 L58,65 L52,65 L50,30 Z"/>
+            <path fill="#16a34a" stroke="black" stroke-width="2" d="M35,68 L75,68 L80,76 L30,76 Z"/>
+            <rect fill="#16a34a" stroke="black" stroke-width="2" x="50" y="76" width="10" height="12"/>
+            <circle fill="#16a34a" stroke="black" stroke-width="2" cx="55" cy="92" r="6"/>
         </g>
     </g>`,
     SPADES: `
     <g transform="translate(100, 195) scale(1.3) translate(-50, -50)">
-        <path fill="#1e293b" stroke="black" stroke-width="2" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
-        <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
+        <path fill="#2563eb" stroke="black" stroke-width="2" d="M20,10 L80,10 L80,50 C80,75 50,95 50,95 C50,95 20,75 20,50 Z"/>
+        <path fill="#60a5fa" opacity="0.5" stroke="black" stroke-width="0.5" d="M30,20 L70,20 L70,48 C70,65 50,82 50,82 C50,82 30,65 30,48 Z"/>
     </g>`,
     HEARTS: `
     <g transform="translate(100, 195) scale(1.3) translate(-50, -50)">
-        <path fill="#1e293b" stroke="black" stroke-width="2" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
-        <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
+        <path fill="#dc2626" stroke="black" stroke-width="2" d="M50,90 C50,90 10,65 10,35 A20,20 0 0,1 50,35 A20,20 0 0,1 90,35 C90,65 50,90 50,90 Z"/>
+        <path fill="#f87171" opacity="0.5" stroke="black" stroke-width="0.5" d="M50,80 C50,80 20,60 20,40 A15,15 0 0,1 50,40 A15,15 0 0,1 80,40 C80,60 50,80 50,80 Z"/>
     </g>`,
     DIAMONDS: `
     <g transform="translate(100, 195) scale(1.3) translate(-50, -50)">
-        <path fill="#1e293b" stroke="black" stroke-width="2" d="M50,5 L80,50 L50,95 L20,50 Z"/>
-        <path fill="#64748b" opacity="0.5" stroke="black" stroke-width="0.5" d="M50,20 L70,50 L50,80 L30,50 Z"/>
+        <path fill="#ea580c" stroke="black" stroke-width="2" d="M50,5 L80,50 L50,95 L20,50 Z"/>
+        <path fill="#fb923c" opacity="0.5" stroke="black" stroke-width="0.5" d="M50,20 L70,50 L50,80 L30,50 Z"/>
     </g>`
 };
 
