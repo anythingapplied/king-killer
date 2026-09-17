@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { GameState, CombatEffect } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -19,6 +19,36 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
     const [showPlays, setShowPlays] = useState(false);
     const playLog = gameState.play_log ?? [];
     const playerLabel = (i: number) => gameState.players[i]?.name || `P${i + 1}`;
+
+    // `position: fixed` + a measured anchor, not `right-full` off the trigger.
+    // The trigger sits in a ~48-112px sidebar flush against the screen edge, so
+    // right-full anchored the popover's own right edge to that sidebar's left
+    // edge - on a narrow phone the popover (208-240px wide) then had nowhere
+    // to go but off the left of the viewport, with nothing to pull it back in.
+    const triggerRef = useRef<HTMLDivElement>(null);
+    const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+
+    useEffect(() => {
+        if (!showPlays || !triggerRef.current) return;
+        const measure = () => {
+            const rect = triggerRef.current!.getBoundingClientRect();
+            const margin = 8;
+            const width = Math.min(240, window.innerWidth - margin * 2);
+            // Prefer opening to the left of the trigger (its usual side), but
+            // clamp so it can never run past either edge of the viewport.
+            const left = Math.min(
+                Math.max(margin, rect.left - width - margin),
+                window.innerWidth - width - margin
+            );
+            const maxHeight = window.innerHeight - rect.top - margin;
+            setPopoverStyle({ left, top: rect.top, width, maxHeight });
+        };
+        measure();
+        // The trigger can move (orientation change, resize, or the arena
+        // reflowing under it), so keep the popover pinned to it while open.
+        window.addEventListener('resize', measure);
+        return () => window.removeEventListener('resize', measure);
+    }, [showPlays]);
 
     return (
         <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
@@ -172,6 +202,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                 <AnimatePresence>
                     {gameState.last_played && (
                         <motion.div 
+                            ref={triggerRef}
                             initial={{ x: 50, opacity: 0 }} 
                             animate={{ x: 0, opacity: 1 }} 
                             exit={{ x: 50, opacity: 0 }}
@@ -189,7 +220,8 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             {showPlays && playLog.length > 0 && (
                                 <div
                                     data-testid="play-log-popover"
-                                    className="absolute right-full top-0 mr-2 z-[130] w-52 sm:w-60 max-h-[60vh] overflow-y-auto bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 text-left"
+                                    style={{ position: 'fixed', ...popoverStyle }}
+                                    className="z-[130] overflow-y-auto bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 text-left"
                                 >
                                     <div className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1.5">
                                         This enemy — {playLog.length} play{playLog.length === 1 ? '' : 's'}
