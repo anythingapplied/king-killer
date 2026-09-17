@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bump whenever game rules OR the deterministic RNG algorithm change.
 /// History replay and snapshot migration key off this value.
-pub const RULES_VERSION: u32 = 2;
+pub const RULES_VERSION: u32 = 3;
 
 /// Deterministic, portable PRNG for all game randomness (SplitMix64).
 ///
@@ -333,6 +333,16 @@ impl GameState {
         };
 
         state.next_enemy();
+
+        // A random player takes the first turn. Drawn from the same
+        // deterministic RNG so seed-based replay stays byte-identical.
+        // Consuming this draw changes the RNG stream vs RULES_VERSION 2,
+        // which is why the version was bumped.
+        let player_count = state.players.len();
+        if player_count > 1 {
+            state.current_player_index = rng.next_index(player_count - 1) as usize;
+        }
+
         state
     }
 

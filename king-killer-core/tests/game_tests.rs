@@ -19,6 +19,7 @@ fn test_play_card_damage() {
         Card::new(Suit::Hearts, Rank::Number(10), 102), // Padding
         Card::new(Suit::Hearts, Rank::Number(10), 103), // Extra padding to satisfy damage
     ];
+    state.current_player_index = 0;
     state.play_cards(vec![0]).unwrap();
     // Survive damage
     state.discard_cards(vec![0]).unwrap();
@@ -32,7 +33,9 @@ fn test_play_card_damage() {
 
 #[test]
 fn test_diamond_draw_order() {
-    let mut state = GameState::new(2);
+    // Fixed seed: the random starting player / deal must not affect this test,
+    // and the draw-order assertions stay deterministic across every run.
+    let mut state = GameState::new_with_seed(999, 2);
     state.players[0].hand = vec![
         Card::new(Suit::Diamonds, Rank::Number(3), 200),
         Card::new(Suit::Spades, Rank::Number(2), 201),
@@ -75,6 +78,7 @@ fn test_all_four_twos() {
     state.tavern_deck = vec![Card::new(Suit::Spades, Rank::Number(10), 308); 10];
     state.discard_pile = vec![Card::new(Suit::Spades, Rank::Number(9), 309); 5];
     
+    state.current_player_index = 0;
     state.play_cards(vec![0, 1, 2, 3]).unwrap();
     state.discard_cards(vec![0]).unwrap(); // Take 10 damage
     
@@ -100,6 +104,7 @@ fn test_retroactive_spades() {
         Card::new(Suit::Hearts, Rank::Number(10), 405),
     ];
     
+    state.current_player_index = 0;
     state.play_cards(vec![0]).unwrap();
     assert_eq!(state.shield_value, 0); // immune
     state.discard_cards(vec![0]).unwrap(); // P1 take damage
@@ -114,6 +119,7 @@ fn test_exact_kill_goes_to_tavern() {
     let mut state = GameState::new(2);
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 500)));
     state.players[0].hand = vec![Card::new(Suit::Spades, Rank::King, 501)];
+    state.current_player_index = 0;
     state.play_cards(vec![0]).unwrap();
 
     assert_eq!(state.last_enemy_fate, Some(EnemyFate::Tavern));
@@ -128,6 +134,7 @@ fn test_overkill_goes_to_discard() {
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 600)));
     state.active_enemy.as_mut().unwrap().current_health = 10; // below 20
     state.players[0].hand = vec![Card::new(Suit::Spades, Rank::King, 601)];
+    state.current_player_index = 0;
     state.play_cards(vec![0]).unwrap();
 
     assert_eq!(state.last_enemy_fate, Some(EnemyFate::Discard));
@@ -139,6 +146,18 @@ fn test_overkill_goes_to_discard() {
 fn test_last_enemy_fate_none_at_start() {
     let state = GameState::new(2);
     assert_eq!(state.last_enemy_fate, None);
+}
+
+#[test]
+fn test_starting_player_is_random_across_seeds() {
+    // "Random players should start each game": the first turn must not always
+    // go to seat 0. Different deals (seeds) should pick different starters.
+    let starters: std::collections::HashSet<usize> = (0..200)
+        .map(|s| GameState::new_with_seed(s as u64, 4).current_player_index)
+        .collect();
+    // With 4 players and 200 seeds virtually every seat should appear.
+    assert!(starters.len() >= 3, "expected near-uniform spread, got {:?}", starters);
+    assert!(starters.iter().all(|&i| i < 4));
 }
 
 #[test]
@@ -175,7 +194,7 @@ fn test_actions_replay_from_seed() {
         serde_json::to_string(&snapshot).unwrap(),
         serde_json::to_string(&game).unwrap()
     );
-    assert_eq!(RULES_VERSION, 2, "bump when rules or RNG change");
+    assert_eq!(RULES_VERSION, 3, "bump when rules or RNG change");
 }
 
 #[test]

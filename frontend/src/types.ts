@@ -38,6 +38,21 @@ export interface Player {
     hand: Card[];
 }
 
+/** A person attached to a room. Seats below the active game's player count
+ * are that game's players; seats at or above it are spectators watching. */
+export interface RoomMember {
+    seat: number;
+    name: string;
+}
+
+/** The state broadcast by the server: the shared game plus the full room
+ * roster so spectators are visible to everyone. */
+export interface RoomSnapshot {
+    id: string;
+    game: GameState;
+    members: RoomMember[];
+}
+
 export type TurnPhase = 
     | 'AwaitingPlay'
     | 'AwaitingNextPlayer'
@@ -79,4 +94,5 @@ export type GameAction =
     | { type: 'ChooseNextPlayer', payload: { index: number } }
     | { type: 'UseSoloJester' }
     | { type: 'Reset' }
+    | { type: 'NewGame', payload: { num_players: number } }
     | { type: 'SetName', payload: { seat: number, name: string } };

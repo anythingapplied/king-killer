@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { GameState, GameAction, Card as CardType, CombatEffect } from '../types';
+import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember } from '../types';
 import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { playBellChime } from '../sound';
@@ -36,6 +36,7 @@ export const useGameLogic = () => {
   const [gameId, setGameId] = useState<string | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<number | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [roster, setRoster] = useState<RoomMember[]>([]);
   const [localGameState, setLocalGameState] = useState<GameState | null>(null);
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
   const [copySuccess, setCopySuccess] = useState(false);
@@ -62,6 +63,8 @@ export const useGameLogic = () => {
   const isMyTurn = localGameState?.current_player_index === myPlayerId;
   const isSolo = localGameState?.players.length === 1;
   const isChoosingNextPlayer = localGameState?.phase === 'AwaitingNextPlayer';
+  // A member seated beyond the active game's player count watches the game.
+  const isSpectator = localGameState !== null && myPlayerId !== null && myPlayerId >= localGameState.players.length;
 
   // Ring the bell only when a turn actually arrives mid-game. Solo play is
   // excluded: the turn returns to you after every action, so each return would
@@ -113,6 +116,15 @@ export const useGameLogic = () => {
     if (!gameState) return;
     const prev = localGameState;
     if (prev) {
+        if (gameState.seed !== prev.seed) {
+            // A brand-new deal replaced this game (New Game / Play Again):
+            // snap to the fresh board instead of animating a defeat flight.
+            setLocalGameState(gameState);
+            setDefeatFlight(null);
+            setSelectedIndices([]);
+            if (gameState.status !== 'InProgress') setShowGameOver(true);
+            return;
+        }
         const effects: CombatEffect[] = [];
         const ts = Date.now();
         const enemyChanged = prev.active_enemy && gameState.active_enemy && prev.active_enemy.card.id !== gameState.active_enemy.card.id;
@@ -212,7 +224,7 @@ export const useGameLogic = () => {
     if (!id || intentionalCloseRef.current) return;
     const socket = new WebSocket(`${WS_BASE}/api/ws/${id}`);
     ws.current = socket;
-    const onState = (payload: GameState) => {
+    const onState = (payload: RoomSnapshot) => {
       gameConnectedRef.current = true;
       reconnectingRef.current = false;
       setReconnecting(false);
@@ -236,7 +248,8 @@ export const useGameLogic = () => {
         ws.current?.send(JSON.stringify(action));
       }
       lastGameStateJsonRef.current = receivedJson;
-      setGameState(payload);
+      setGameState(payload.game);
+      setRoster(payload.members);
     };
     socket.onmessage = (event) => {
       const msg = JSON.parse(event.data);
@@ -352,7 +365,7 @@ export const useGameLogic = () => {
       body: JSON.stringify({ num_players: numPlayers, player_name: playerName || undefined }),
     });
     const data = await res.json();
-    setGameId(data.id); setGameState(data.state); setMyPlayerId(0);
+    setGameId(data.id); setGameState(data.state.game); setRoster(data.state.members); setMyPlayerId(0);
     localStorage.setItem(`seat_${data.id}`, "0");
     setUrlGameId(data.id);
   };
@@ -385,11 +398,14 @@ export const useGameLogic = () => {
         alert("Game not found");
         return;
       }
+      const snap = await res.json() as RoomSnapshot;
 
       // A seat from an earlier session (resume case) skips the join call.
       const savedSeat = localStorage.getItem(`seat_${id}`);
       if (savedSeat !== null) {
         setGameId(id);
+        setGameState(snap.game);
+        setRoster(snap.members);
         setMyPlayerId(parseInt(savedSeat));
         setUrlGameId(id);
         return;
@@ -404,11 +420,11 @@ export const useGameLogic = () => {
       if (joinRes.ok) {
         const data = await joinRes.json();
         setGameId(id);
+        setGameState(snap.game);
+        setRoster(snap.members);
         setMyPlayerId(data.seat_index);
         localStorage.setItem(`seat_${id}`, data.seat_index.toString());
         setUrlGameId(id);
-      } else if (joinRes.status === 403) {
-        alert("That game is full — no seats left.");
       } else {
         alert("Could not join the game. Please try again.");
       }
@@ -482,18 +498,23 @@ export const useGameLogic = () => {
       ws.current = null;
     }
     clearUrlGameId();
-    setGameId(null); setGameState(null); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
+    setGameId(null); setGameState(null); setRoster([]); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
     setDefeatFlight(null);
     setReconnecting(false);
   };
 
   const restartTable = () => { sendAction({ type: 'Reset' }); setShowGameOver(false); };
 
+  const startNewGame = (numPlayers: number) => {
+    sendAction({ type: 'NewGame', payload: { num_players: numPlayers } });
+    setShowGameOver(false);
+  };
+
   return {
-    gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
+    gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, reconnecting,
-    sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
+    sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
     isChoosingNextPlayer,
-    createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, renamePlayer
+    createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
   };
 };

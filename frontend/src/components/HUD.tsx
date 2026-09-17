@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import type { GameState, CombatEffect } from '../types';
+import type { GameState, CombatEffect, RoomMember } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -7,30 +7,36 @@ interface HUDProps {
     gameId: string;
     myPlayerId: number;
     gameState: GameState;
+    roster: RoomMember[];
+    isSpectator: boolean;
     copySuccess: boolean;
     activeEffects: CombatEffect[];
     reconnecting: boolean;
     onMenuClick: () => void;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
+    onNewGameClick: () => void;
     onRename: (name: string) => void;
 }
 
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, copySuccess, activeEffects, reconnecting,
-    onMenuClick, onCopyIdClick, onSoloJesterClick, onRename 
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting,
+    onMenuClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
-    const me = gameState.players[myPlayerId];
-    const mustRefreshSolo = isSolo && me.hand.length === 0 && gameState.solo_jesters > 0;
+    const me = isSpectator ? undefined : gameState.players[myPlayerId];
+    const mustRefreshSolo = isSolo && !!me && me.hand.length === 0 && gameState.solo_jesters > 0;
     const isMyTurn = gameState.current_player_index === myPlayerId;
+    const watching = roster.filter(m => m.seat >= gameState.players.length);
 
     const [editingName, setEditingName] = useState(false);
     const [draftName, setDraftName] = useState('');
     const nameCancelledRef = useRef(false);
 
+    const displayMyName = me?.name || roster.find(m => m.seat === myPlayerId)?.name || `${isSpectator ? 'Spectator' : 'Player'} ${myPlayerId + 1}`;
+
     const startEditName = () => {
-        setDraftName(me?.name || '');
+        setDraftName(me?.name || roster.find(m => m.seat === myPlayerId)?.name || '');
         setEditingName(true);
         nameCancelledRef.current = false;
     };
@@ -39,7 +45,7 @@ const HUD: React.FC<HUDProps> = ({
         nameCancelledRef.current = true; // the input unmount blur must not re-fire
         setEditingName(false);
         const name = draftName.trim();
-        if (name && name !== me?.name) onRename(name);
+        if (name && name !== displayMyName) onRename(name);
     };
     const cancelName = () => {
         nameCancelledRef.current = true;
@@ -53,7 +59,10 @@ const HUD: React.FC<HUDProps> = ({
     return (
         <div data-testid="hud" className="z-[100] bg-slate-800/90 p-2 rounded-xl shadow-2xl border border-slate-700/50 backdrop-blur-md relative max-w-2xl mx-auto w-full flex-shrink-0">
             <div className="flex justify-between items-center px-1 mb-1">
-                <button onClick={onMenuClick} className="bg-slate-700 text-[8px] font-black px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
+                <div className="flex gap-1">
+                    <button onClick={onMenuClick} className="bg-slate-700 text-[8px] font-black px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
+                    <button onClick={onNewGameClick} className="bg-amber-700 text-[8px] font-black px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+                </div>
                 {editingName ? (
                     <input
                         autoFocus
@@ -67,7 +76,7 @@ const HUD: React.FC<HUDProps> = ({
                     />
                 ) : (
                     <button onClick={startEditName} title="Click to change your name" className="bg-blue-600 text-[9px] font-black px-4 py-1 rounded-full border-2 border-slate-900 shadow-xl tracking-widest whitespace-nowrap hover:bg-blue-500 transition-colors cursor-pointer">
-                        {me?.name || `Player ${myPlayerId + 1}`}
+                        {isSpectator ? '👁 ' : ''}{displayMyName}
                     </button>
                 )}
                 <button onClick={onCopyIdClick} className={`flex items-center gap-1 px-3 py-1 rounded-full border text-[8px] font-mono transition-all ${copySuccess ? 'bg-green-900/40 border-green-500 text-green-300' : 'bg-slate-950 border-slate-800'}`}>
@@ -128,6 +137,20 @@ const HUD: React.FC<HUDProps> = ({
                     );
                 })}
             </div>
+
+            {watching.length > 0 && (
+                <div data-testid="watching-row" className="flex gap-1.5 justify-center flex-wrap items-center border-t border-slate-700/30 pt-1.5 mt-1.5">
+                    <span className="text-[7px] font-black uppercase tracking-widest text-slate-500">Watching</span>
+                    {watching.map(m => {
+                        const isMe = m.seat === myPlayerId;
+                        return (
+                            <span key={m.seat} className={`px-2 py-0.5 rounded-full text-[8px] font-black border ${isMe ? 'border-amber-400 bg-amber-900/40 text-amber-200' : 'bg-slate-900/40 border-slate-700 text-slate-400'}`}>
+                                {m.name || (isMe ? 'You' : `Spectator ${m.seat - gameState.players.length + 1}`)}
+                            </span>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 };

@@ -73,7 +73,7 @@ test('a 3rd player joins a 3-player game and everyone can pick their name', asyn
     test.skip(await portIsInUse(), `Port ${API_PORT} is already in use; stop the API and let this test own it`);
 
     const dataDir = mkdtempSync(path.join(tmpdir(), 'king-killer-join-'));
-    let api = startApi(dataDir);
+    const api = startApi(dataDir);
     try {
         await waitForApi();
         await page.setViewportSize({ width: 1280, height: 800 });
@@ -114,18 +114,16 @@ test('a 3rd player joins a 3-player game and everyone can pick their name', asyn
         // The renaming player's own badge reflects the change.
         await expect(bob.locator('button[title="Click to change your name"]')).toContainText(/BOB/i, { timeout: 10_000 });
 
-        // A 4th player gets a clear "game is full" message and lands back on the
-        // menu — never stuck on "Entering the Castle...".
+        // A 4th player joins as a spectator: no player seat is free, so they
+        // watch the game from the HUD instead of being turned away, and never
+        // get stuck on "Entering the Castle...".
         const daveCtx = await browser.newContext();
         const dave = await daveCtx.newPage();
-        const [dialog] = await Promise.all([
-            dave.waitForEvent('dialog', { timeout: 15_000 }),
-            dave.goto(gameUrl),
-        ]);
-        expect(dialog.message().toLowerCase()).toContain('full');
-        await dialog.dismiss();
-        await expect(dave.locator(`text=Entering the Castle`)).toHaveCount(0);
-        await expect(dave.locator('h1', { hasText: 'KING KILLER' })).toBeVisible();
+        await dave.goto(gameUrl);
+        await dave.waitForSelector('[data-testid="hud"]', { timeout: 15_000 });
+        await expect(dave.locator('[data-testid="spectator-bar"]')).toBeVisible();
+        await expect(dave.locator('[data-testid="watching-row"]')).toBeVisible();
+        await expect(dave.locator('[data-testid="watching-row"]')).toContainText(/you/i);
     } finally {
         await stopApi(api);
         rmSync(dataDir, { recursive: true, force: true });

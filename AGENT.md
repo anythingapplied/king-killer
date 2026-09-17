@@ -4,3 +4,7 @@ I would like to create a mobile friendly (mobile first?) website to play kingkil
 * Please download card images for me to use and make sure they have a license that allows me to use them.
 * For now, the website should support multiplayer, but shouldn't support log in or lobbies. Maybe we'll add those later.
 * This is a nixos machine, feel free to use devenv for dependencies
+
+## Workflow
+
+* Commit and push each feature to git as you build it, with a concise commit message describing what was done.

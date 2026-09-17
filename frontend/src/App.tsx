@@ -31,13 +31,14 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 
 const App: React.FC = () => {
     const {
-        gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
+        gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
         defeatFlight, finishDefeatFlight, reconnecting,
-        sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
-        createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, renamePlayer
+        sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
+        createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
 
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
+    const [showNewGame, setShowNewGame] = useState(false);
 
     useEffect(() => {
         if (playerName) localStorage.setItem('kingkiller_player_name', playerName);
@@ -103,12 +104,15 @@ const App: React.FC = () => {
                 gameId={gameId}
                 myPlayerId={myPlayerId}
                 gameState={localGameState}
+                roster={roster}
+                isSpectator={isSpectator}
                 copySuccess={copySuccess}
                 activeEffects={activeEffects}
                 reconnecting={reconnecting}
                 onMenuClick={exitToMenu}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
+                onNewGameClick={() => setShowNewGame(true)}
                 onRename={renamePlayer}
             />
 
@@ -122,37 +126,46 @@ const App: React.FC = () => {
 
             {/* Controls Row */}
             <div className="flex flex-col bg-slate-900/60 backdrop-blur-xl border-t border-white/5 z-[90]">
-                <HandArea 
-                    sortedHand={sortedHand}
-                    maxHandSize={localGameState.max_hand_size}
-                    isMyTurn={isMyTurn}
-                    selectedIndices={selectedIndices}
-                    damageNeeded={damageNeeded}
-                    currentDiscardValue={currentDiscardValue}
-                    phase={localGameState.phase}
-                    enemySuit={localGameState.active_enemy?.card.suit || null}
-                    isJesterActive={localGameState.active_enemy?.is_jester_active || false}
-                    onCardClick={toggleCard}
-                    actualHand={localGameState.players[myPlayerId].hand}
-                    currentPlayerIndex={localGameState.current_player_index}
-                    discardRemaining={discardRemaining}
-                />
+                {isSpectator ? (
+                    <div data-testid="spectator-bar" className="flex items-center justify-center gap-2 py-6 text-slate-400">
+                        <span className="text-lg">👁</span>
+                        <span className="text-xs font-black uppercase tracking-widest">You're watching — new games can be started from the HUD</span>
+                    </div>
+                ) : (
+                    <>
+                        <HandArea 
+                            sortedHand={sortedHand}
+                            maxHandSize={localGameState.max_hand_size}
+                            isMyTurn={isMyTurn}
+                            selectedIndices={selectedIndices}
+                            damageNeeded={damageNeeded}
+                            currentDiscardValue={currentDiscardValue}
+                            phase={localGameState.phase}
+                            enemySuit={localGameState.active_enemy?.card.suit || null}
+                            isJesterActive={localGameState.active_enemy?.is_jester_active || false}
+                            onCardClick={toggleCard}
+                            actualHand={localGameState.players[myPlayerId].hand}
+                            currentPlayerIndex={localGameState.current_player_index}
+                            discardRemaining={discardRemaining}
+                        />
 
-                <ActionFooter 
-                    isMyTurn={isMyTurn}
-                    selectedIndicesCount={selectedIndices.length}
-                    damageNeeded={damageNeeded}
-                    discardRemaining={discardRemaining}
-                    currentDiscardValue={currentDiscardValue}
-                    isSolo={isSolo}
-                    isImmuneWarning={isImmuneWarning}
-                    phase={localGameState.phase}
-                    players={localGameState.players}
-                    myPlayerId={myPlayerId}
-                    onAttackClick={() => sendAction({ type: damageNeeded > 0 ? 'DiscardCards' : 'PlayCards', payload: { indices: selectedIndices } })}
-                    onYieldClick={() => sendAction({ type: 'Yield' })}
-                    onChooseNextPlayer={chooseNextPlayer}
-                />
+                        <ActionFooter 
+                            isMyTurn={isMyTurn}
+                            selectedIndicesCount={selectedIndices.length}
+                            damageNeeded={damageNeeded}
+                            discardRemaining={discardRemaining}
+                            currentDiscardValue={currentDiscardValue}
+                            isSolo={isSolo}
+                            isImmuneWarning={isImmuneWarning}
+                            phase={localGameState.phase}
+                            players={localGameState.players}
+                            myPlayerId={myPlayerId}
+                            onAttackClick={() => sendAction({ type: damageNeeded > 0 ? 'DiscardCards' : 'PlayCards', payload: { indices: selectedIndices } })}
+                            onYieldClick={() => sendAction({ type: 'Yield' })}
+                            onChooseNextPlayer={chooseNextPlayer}
+                        />
+                    </>
+                )}
             </div>
 
             {/* Defeated enemy flying to its pile */}
@@ -182,7 +195,35 @@ const App: React.FC = () => {
                                 </p>
                             )}
                             <button onClick={restartTable} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-blue-800 uppercase tracking-widest text-xs mb-4">Play Again</button>
+                            <button onClick={() => setShowNewGame(true)} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-amber-800 uppercase tracking-widest text-xs mb-4">New Game</button>
                             <button onClick={exitToMenu} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest text-xs">Main Menu</button>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* New Game player-count modal (available mid-game and from Game Over) */}
+            <AnimatePresence>
+                {showNewGame && (
+                    <motion.div 
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-slate-950/80 flex items-center justify-center p-8 z-[210] backdrop-blur-sm text-center"
+                    >
+                        <motion.div 
+                            initial={{ scale: 0.9, y: 50 }} animate={{ scale: 1, y: 0 }}
+                            className="bg-slate-800/95 p-12 rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-slate-700 w-full max-w-sm relative"
+                        >
+                            <button onClick={() => setShowNewGame(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">Close</button>
+                            <h2 className="text-3xl font-black mb-2 tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-amber-300 to-amber-600">New Game</h2>
+                            <p className="text-slate-400 text-xs font-bold mb-8 leading-relaxed">Deal a fresh game in this room. Everyone keeps their seats; extra members watch.</p>
+                            <div className="grid grid-cols-2 gap-4">
+                                {[1, 2, 3, 4].map(n => (
+                                    <button key={n} onClick={() => { setShowNewGame(false); startNewGame(n); }} data-testid={`new-game-${n}`} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-2xl shadow-lg active:scale-95 transition-all text-lg">
+                                        {n} Player{n > 1 ? 's' : ''}
+                                    </button>
+                                ))}
+                            </div>
+                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mt-8">Room ID: {gameId}</p>
                         </motion.div>
                     </motion.div>
                 )}

@@ -8,7 +8,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use king_killer_core::GameState;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -19,17 +19,107 @@ use rand::RngExt;
 
 #[derive(Clone)]
 struct AppState {
-    games: Arc<RwLock<HashMap<String, GameState>>>,
+    rooms: Arc<RwLock<HashMap<String, Room>>>,
     broadcasts: Arc<RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>>,
-    occupied_seats: Arc<RwLock<HashMap<String, Vec<bool>>>>,
     last_activity: Arc<RwLock<Instant>>,
     db: SqlitePool,
 }
 
+/// A person attached to a room. Seats below the current game's player count
+/// are that game's players; seats at or above it are spectators ("watching").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Member {
+    seat: usize,
+    name: String,
+}
+
+/// A room is a persistent set of members plus the currently running game.
+/// A room outlives any single deal: once a game finishes (or even mid-game), a
+/// new deal with a different number of players can be started in the same room.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Room {
+    id: String,
+    members: Vec<Member>,
+    game: GameState,
+}
+
+/// What clients receive: the shared game plus the full room roster, so
+/// spectators (members seated beyond the player count) are visible too.
 #[derive(Clone, Serialize)]
-#[serde(tag = "type", content = "payload")]
-enum ServerMessage {
-    State(GameState),
+struct RoomSnapshot {
+    id: String,
+    game: GameState,
+    members: Vec<Member>,
+}
+
+fn snapshot(room: &Room) -> RoomSnapshot {
+    // Keep roster player names authoritative from the game state. Spectator
+    // names live only in the members list, so they are untouched here.
+    let mut members = room.members.clone();
+    for (i, player) in room.game.players.iter().enumerate() {
+        if let Some(m) = members.iter_mut().find(|m| m.seat == i) {
+            m.name = player.name.clone();
+        }
+    }
+    RoomSnapshot {
+        id: room.id.clone(),
+        game: room.game.clone(),
+        members,
+    }
+}
+
+/// Deals a brand-new game with `num_players`, seeding each seat's name from the
+/// room roster so returning players keep their identity across restarts.
+/// Members seated past the new player count automatically become spectators.
+fn deal_new_game(room: &mut Room, num_players: u32) {
+    let player_count = num_players.clamp(1, 4) as usize;
+    let names: Vec<String> = (0..player_count)
+        .map(|i| {
+            room.members
+                .iter()
+                .find(|m| m.seat == i)
+                .map(|m| m.name.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let mut game = GameState::new(num_players.clamp(1, 4));
+    for (i, name) in names.into_iter().enumerate() {
+        if let Some(p) = game.players.get_mut(i) {
+            p.name = name;
+        }
+    }
+    room.game = game;
+}
+
+/// Claims a seat for a new joiner. Prefers a random free player seat; when the
+/// game is full the joiner watches instead, receiving a monotonic seat at or
+/// above the player count. Returns the seat and whether it is a player seat.
+fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
+    let player_count = room.game.players.len();
+    let taken: HashSet<usize> = room.members.iter().map(|m| m.seat).collect();
+    let free: Vec<usize> = (0..player_count).filter(|s| !taken.contains(s)).collect();
+
+    if let Some(&seat) = free.choose(&mut rand::rng()) {
+        room.members.push(Member {
+            seat,
+            name: name.clone().unwrap_or_default(),
+        });
+        if let Some(provided_name) = name {
+            if let Some(player) = room.game.players.get_mut(seat) {
+                player.name = provided_name;
+            }
+        }
+        (seat, true)
+    } else {
+        // All player seats are taken: this member watches the game.
+        let seat = room.members.iter().map(|m| m.seat).max().map_or(player_count, |m| m + 1);
+        room.members.push(Member {
+            seat,
+            name: name.unwrap_or_default(),
+        });
+        (seat, false)
+    }
 }
 
 fn idle_timeout() -> Duration {
@@ -50,25 +140,24 @@ fn generate_game_code() -> String {
     (0..6).map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char).collect()
 }
 
-async fn persist_game(db: &SqlitePool, id: &str, game: &GameState) {
-    let state_json = serde_json::to_string(game).unwrap();
-    let _ = sqlx::query(
-        "INSERT INTO games (id, state_json, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP) \
-         ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = CURRENT_TIMESTAMP",
-    )
-    .bind(id)
-    .bind(&state_json)
-    .execute(db)
-    .await;
+/// Seats 0..player_count are game players; this writes the occupied masks for
+/// the legacy column (kept for compatibility with existing snapshots).
+fn occupied_seats_json(room: &Room) -> String {
+    let occupied: Vec<bool> = (0..room.game.players.len())
+        .map(|i| room.members.iter().any(|m| m.seat == i))
+        .collect();
+    serde_json::to_string(&occupied).unwrap()
 }
 
-async fn persist_seats(db: &SqlitePool, id: &str, seats: &[bool]) {
-    let json = serde_json::to_string(seats).unwrap();
+async fn persist_room(db: &SqlitePool, room: &Room) {
+    let room_json = serde_json::to_string(room).unwrap();
     let _ = sqlx::query(
-        "UPDATE games SET occupied_seats = ?1 WHERE id = ?2",
+        "INSERT INTO games (id, state_json, occupied_seats, updated_at) VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \
+         ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, occupied_seats = excluded.occupied_seats, updated_at = CURRENT_TIMESTAMP",
     )
-    .bind(&json)
-    .bind(id)
+    .bind(&room.id)
+    .bind(&room_json)
+    .bind(&occupied_seats_json(room))
     .execute(db)
     .await;
 }
@@ -87,24 +176,43 @@ async fn record_history(db: &SqlitePool, game_id: &str, action_type: &str, actio
     .await;
 }
 
-async fn load_games(db: &SqlitePool) -> (HashMap<String, GameState>, HashMap<String, Vec<bool>>) {
+async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, state_json, occupied_seats FROM games")
             .fetch_all(db)
             .await
             .unwrap_or_default();
 
-    let mut games = HashMap::new();
-    let mut occupied_seats = HashMap::new();
+    let mut rooms = HashMap::new();
     for (id, state_json, seats_json) in rows {
-        if let Ok(game_state) = serde_json::from_str::<GameState>(&state_json) {
+        if let Ok(room) = serde_json::from_str::<Room>(&state_json) {
+            rooms.insert(id, room);
+        } else if let Ok(game) = serde_json::from_str::<GameState>(&state_json) {
+            // Legacy snapshot (pre-room): rebuild the roster from the seat map.
             let seats: Vec<bool> = serde_json::from_str(&seats_json)
-                .unwrap_or_else(|_| game_state.players.iter().map(|p| !p.name.is_empty()).collect());
-            occupied_seats.insert(id.clone(), seats);
-            games.insert(id, game_state);
+                .unwrap_or_else(|_| game.players.iter().map(|p| !p.name.is_empty()).collect());
+            let members = game
+                .players
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| {
+                    seats.get(i).copied().unwrap_or(false).then_some(Member {
+                        seat: i,
+                        name: p.name.clone(),
+                    })
+                })
+                .collect();
+            rooms.insert(
+                id.clone(),
+                Room {
+                    id,
+                    members,
+                    game,
+                },
+            );
         }
     }
-    (games, occupied_seats)
+    rooms
 }
 
 #[tokio::main]
@@ -125,19 +233,18 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let (loaded_games, loaded_seats) = load_games(&pool).await;
-    tracing::info!("loaded {} games from database", loaded_games.len());
+    let loaded_rooms = load_rooms(&pool).await;
+    tracing::info!("loaded {} rooms from database", loaded_rooms.len());
 
     let mut broadcasts = HashMap::new();
-    for id in loaded_games.keys() {
+    for id in loaded_rooms.keys() {
         let (tx, _) = broadcast::channel(100);
         broadcasts.insert(id.clone(), tx);
     }
 
     let state = AppState {
-        games: Arc::new(RwLock::new(loaded_games)),
+        rooms: Arc::new(RwLock::new(loaded_rooms)),
         broadcasts: Arc::new(RwLock::new(broadcasts)),
-        occupied_seats: Arc::new(RwLock::new(loaded_seats)),
         last_activity: Arc::new(RwLock::new(Instant::now())),
         db: pool,
     };
@@ -187,10 +294,10 @@ struct CreateGameRequest {
     player_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct GameResponse {
     id: String,
-    state: GameState,
+    state: RoomSnapshot,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -202,7 +309,14 @@ enum GameAction {
     ChooseNextPlayer { index: usize },
     UseSoloJester,
     Reset,
+    NewGame { num_players: u32 },
     SetName { seat: usize, name: String },
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "type", content = "payload")]
+enum ServerMessage {
+    State(RoomSnapshot),
 }
 
 async fn create_game(
@@ -212,31 +326,36 @@ async fn create_game(
     touch(&state.last_activity);
     let mut id = generate_game_code();
     {
-        let games = state.games.read().unwrap();
-        while games.contains_key(&id) {
+        let rooms = state.rooms.read().unwrap();
+        while rooms.contains_key(&id) {
             id = generate_game_code();
         }
     }
 
-    let mut game_state = GameState::new(payload.num_players);
+    let mut game = GameState::new(payload.num_players.clamp(1, 4));
+    let mut members = Vec::new();
     if let Some(name) = &payload.player_name {
-        if let Some(player) = game_state.players.first_mut() {
+        if let Some(player) = game.players.first_mut() {
             player.name = name.clone();
         }
     }
-    state.games.write().unwrap().insert(id.clone(), game_state.clone());
-    persist_game(&state.db, &id, &game_state).await;
-    
+    members.push(Member {
+        seat: 0,
+        name: game.players[0].name.clone(),
+    });
+
+    let room = Room {
+        id: id.clone(),
+        members,
+        game,
+    };
+    state.rooms.write().unwrap().insert(id.clone(), room.clone());
+    persist_room(&state.db, &room).await;
+
     let (tx, _) = broadcast::channel(100);
     state.broadcasts.write().unwrap().insert(id.clone(), tx);
-    
-    // Mark seat 0 as taken by creator
-    let mut seats = vec![false; payload.num_players as usize];
-    seats[0] = true;
-    state.occupied_seats.write().unwrap().insert(id.clone(), seats.clone());
-    persist_seats(&state.db, &id, &seats).await;
-    
-    Json(GameResponse { id, state: game_state })
+
+    Json(GameResponse { id, state: snapshot(&room) })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -247,6 +366,9 @@ struct JoinRequest {
 #[derive(Serialize)]
 struct JoinResponse {
     seat_index: usize,
+    /// True when all player seats were taken and this member got a spectator
+    /// seat (they can watch but not act).
+    spectator: bool,
 }
 
 async fn join_game_seat(
@@ -254,63 +376,30 @@ async fn join_game_seat(
     State(state): State<AppState>,
     Json(payload): Json<JoinRequest>,
 ) -> Result<Json<JoinResponse>, axum::http::StatusCode> {
-    let seat = {
-        let mut all_occupied = state.occupied_seats.write().unwrap();
-        match all_occupied.get_mut(&id) {
-            Some(seats) => {
-                let free_seats: Vec<usize> = seats.iter().enumerate()
-                    .filter(|&(_, &occupied)| !occupied)
-                    .map(|(i, _)| i)
-                    .collect();
-                if let Some(&seat) = free_seats.choose(&mut rand::rng()) {
-                    seats[seat] = true;
-                    Some(seat)
-                } else {
-                    None
-                }
-            }
-            None => return Err(axum::http::StatusCode::NOT_FOUND),
-        }
-    };
-
-    let seat = match seat {
-        Some(seat) => seat,
-        None => return Err(axum::http::StatusCode::FORBIDDEN),
-    };
-
-    // Persist the seat assignment; the mutation already happened under the lock.
-    let persisted_seats = state.occupied_seats.read().unwrap().get(&id).cloned();
-    if let Some(seats) = persisted_seats {
-        persist_seats(&state.db, &id, &seats).await;
-    }
-
-    if let Some(name) = &payload.name {
-        let game_clone = {
-            let mut games = state.games.write().unwrap();
-            games.get_mut(&id).map(|game| {
-                if let Some(player) = game.players.get_mut(seat) {
-                    player.name = name.clone();
-                }
-                game.clone()
-            })
+    let response = {
+        let mut rooms = state.rooms.write().unwrap();
+        let room = rooms.get_mut(&id).ok_or(axum::http::StatusCode::NOT_FOUND)?;
+        let (seat, is_player) = claim_seat(room, payload.name);
+        let response = JoinResponse {
+            seat_index: seat,
+            spectator: !is_player,
         };
-        if let Some(game) = game_clone {
-            persist_game(&state.db, &id, &game).await;
-        }
-    }
+        (response, room.clone())
+    };
 
+    persist_room(&state.db, &response.1).await;
     touch(&state.last_activity);
-    Ok(Json(JoinResponse { seat_index: seat }))
+    Ok(Json(response.0))
 }
 
 async fn get_game(
     Path(id): Path<String>,
     State(state): State<AppState>,
-) -> Result<Json<GameState>, axum::http::StatusCode> {
-    let games = state.games.read().unwrap();
-    if let Some(game) = games.get(&id) {
+) -> Result<Json<RoomSnapshot>, axum::http::StatusCode> {
+    let rooms = state.rooms.read().unwrap();
+    if let Some(room) = rooms.get(&id) {
         touch(&state.last_activity);
-        Ok(Json(game.clone()))
+        Ok(Json(snapshot(room)))
     } else {
         Err(axum::http::StatusCode::NOT_FOUND)
     }
@@ -337,13 +426,13 @@ async fn handle_socket(socket: WebSocket, id: String, state: AppState) {
 
     let (mut sender, mut receiver) = socket.split();
 
-    // Push the current state immediately so a newly-connected client renders
-    let initial_state = {
-        let games = state.games.read().unwrap();
-        games.get(&id).cloned()
+    // Push the current room immediately so a newly-connected client renders.
+    let initial = {
+        let rooms = state.rooms.read().unwrap();
+        rooms.get(&id).map(snapshot)
     };
-    if let Some(game) = initial_state {
-        let msg = serde_json::to_string(&ServerMessage::State(game)).unwrap();
+    if let Some(snap) = initial {
+        let msg = serde_json::to_string(&ServerMessage::State(snap)).unwrap();
         if sender.send(Message::Text(msg.into())).await.is_err() {
             return;
         }
@@ -370,47 +459,48 @@ async fn handle_socket(socket: WebSocket, id: String, state: AppState) {
                     GameAction::ChooseNextPlayer { .. } => "choose_next_player",
                     GameAction::UseSoloJester => "use_solo_jester",
                     GameAction::Reset => "reset",
+                    GameAction::NewGame { .. } => "new_game",
                     GameAction::SetName { .. } => "set_name",
                 };
 
-                let game_clone = {
-                    let mut games = state_recv.games.write().unwrap();
-                    games.get_mut(&id).map(|game| {
-                        let old_names: Vec<String> = game.players.iter().map(|p| p.name.clone()).collect();
+                let room = {
+                    let mut rooms = state_recv.rooms.write().unwrap();
+                    rooms.get_mut(&id).map(|room| {
                         let _ = match &action {
-                            GameAction::PlayCards { indices } => game.play_cards(indices.clone()),
-                            GameAction::Yield => game.yield_turn(),
-                            GameAction::DiscardCards { indices } => game.discard_cards(indices.clone()),
-                            GameAction::ChooseNextPlayer { index } => game.choose_next_player(*index),
-                            GameAction::UseSoloJester => game.use_solo_jester(),
+                            GameAction::PlayCards { indices } => room.game.play_cards(indices.clone()),
+                            GameAction::Yield => room.game.yield_turn(),
+                            GameAction::DiscardCards { indices } => room.game.discard_cards(indices.clone()),
+                            GameAction::ChooseNextPlayer { index } => room.game.choose_next_player(*index),
+                            GameAction::UseSoloJester => room.game.use_solo_jester(),
                             GameAction::Reset => {
-                                let num_players = game.players.len() as u32;
-                                *game = GameState::new(num_players);
-                                for (i, name) in old_names.iter().enumerate() {
-                                    if let Some(player) = game.players.get_mut(i) {
-                                        player.name = name.clone();
-                                    }
-                                }
+                                deal_new_game(room, room.game.players.len() as u32);
+                                Ok(())
+                            }
+                            GameAction::NewGame { num_players } => {
+                                deal_new_game(room, *num_players);
                                 Ok(())
                             }
                             GameAction::SetName { seat, name } => {
-                                if let Some(player) = game.players.get_mut(*seat) {
+                                if let Some(player) = room.game.players.get_mut(*seat) {
                                     player.name = name.clone();
+                                }
+                                if let Some(member) = room.members.iter_mut().find(|m| m.seat == *seat) {
+                                    member.name = name.clone();
                                 }
                                 Ok(())
                             }
                         };
-                        game.clone()
+                        room.clone()
                     })
                 };
 
-                if let Some(game) = game_clone {
-                    record_history(&state_recv.db, &id, action_type, &action, &game).await;
-                    persist_game(&state_recv.db, &id, &game).await;
+                if let Some(room) = room {
+                    record_history(&state_recv.db, &id, action_type, &action, &room.game).await;
+                    persist_room(&state_recv.db, &room).await;
 
                     let broadcasts = state_recv.broadcasts.read().unwrap();
                     if let Some(tx) = broadcasts.get(&id) {
-                        let _ = tx.send(ServerMessage::State(game));
+                        let _ = tx.send(ServerMessage::State(snapshot(&room)));
                     }
                     touch(&state_recv.last_activity);
                 }
@@ -443,47 +533,116 @@ mod tests {
         let pool = test_pool().await;
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
-        // Create a 2-player game with a NAMELESS creator (the resume case),
-        // fill both seats, then make a move.
+        // A 2-player room with a NAMELESS creator (the resume case), a joiner,
+        // a spectator, and an in-progress game must survive a reload unchanged.
         let mut game = GameState::new(2);
-        let seats = vec![true, true];
-        let _ = game.play_cards(vec![0]);
+        let _ = game.play_cards(vec![game.current_player_index]);
+        let room = Room {
+            id: "TEST01".to_string(),
+            members: vec![
+                Member { seat: 0, name: String::new() },
+                Member { seat: 1, name: "Bob".to_string() },
+                Member { seat: 2, name: "Carl".to_string() },
+            ],
+            game,
+        };
 
-        persist_game(&pool, "TEST01", &game).await;
-        persist_seats(&pool, "TEST01", &seats).await;
+        persist_room(&pool, &room).await;
 
         // Simulate a server restart: everything must be reconstructed from the DB.
-        let (games, seats_loaded) = load_games(&pool).await;
-        let loaded = games.get("TEST01").expect("game must be loaded");
+        let loaded = load_rooms(&pool).await;
+        let from_db = loaded.get("TEST01").expect("room must be loaded");
+        // Members (including spectators) persist across a restart...
         assert_eq!(
-            serde_json::to_string(&game).unwrap(),
-            serde_json::to_string(loaded).unwrap()
+            serde_json::to_string(&room.members).unwrap(),
+            serde_json::to_string(&from_db.members).unwrap()
         );
-        // Seat occupancy is persisted explicitly, so a nameless player keeps
-        // their seat across a restart.
-        assert_eq!(seats_loaded.get("TEST01").unwrap(), &seats);
+        // ...along with the game state.
+        assert_eq!(
+            serde_json::to_string(&room.game).unwrap(),
+            serde_json::to_string(&from_db.game).unwrap()
+        );
 
         // A later action must also survive a reload unchanged.
-        let _ = game.play_cards(vec![0]);
-        persist_game(&pool, "TEST01", &game).await;
-        let (games2, _) = load_games(&pool).await;
+        let mut room = room;
+        room.game.discard_cards(vec![0]).unwrap_or_default();
+        persist_room(&pool, &room).await;
+        let loaded = load_rooms(&pool).await;
         assert_eq!(
-            serde_json::to_string(&game).unwrap(),
-            serde_json::to_string(games2.get("TEST01").unwrap()).unwrap()
+            serde_json::to_string(&room.game).unwrap(),
+            serde_json::to_string(&loaded.get("TEST01").unwrap().game).unwrap()
         );
     }
 
     #[tokio::test]
-    async fn nameless_creator_keeps_seat_after_reload() {
+    async fn legacy_snapshot_migrates_to_room() {
         let pool = test_pool().await;
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
-        let game = GameState::new(3);
-        persist_game(&pool, "SEATS", &game).await;
-        persist_seats(&pool, "SEATS", &[true, false, true]).await;
+        // A pre-room snapshot stores only the GameState JSON plus a seat map.
+        let mut game = GameState::new(3);
+        game.players[0].name = "Host".to_string();
+        let state_json = serde_json::to_string(&game).unwrap();
+        let seats = serde_json::to_string(&vec![true, false, true]).unwrap();
+        let _ = sqlx::query("INSERT INTO games (id, state_json, occupied_seats) VALUES (?1, ?2, ?3)")
+            .bind("LEGACY")
+            .bind(&state_json)
+            .bind(&seats)
+            .execute(&pool)
+            .await;
 
-        let (_, seats) = load_games(&pool).await;
-        assert_eq!(seats.get("SEATS").unwrap(), &vec![true, false, true]);
+        let loaded = load_rooms(&pool).await;
+        let room = loaded.get("LEGACY").expect("legacy room must load");
+        // Seat 0 (named) and seat 2 (nameless but claimed) are members; seat 1
+        // was never claimed and stays free for a future joiner.
+        assert_eq!(room.members.len(), 2);
+        assert_eq!(room.members[0].name, "Host");
+        assert_eq!(room.members[1].seat, 2);
+    }
+
+    #[tokio::test]
+    async fn claim_seat_prefers_players_then_spectators() {
+        let mut room = Room {
+            id: "SEATS".to_string(),
+            members: vec![Member { seat: 0, name: "Host".to_string() }],
+            game: GameState::new(2),
+        };
+
+        let (bob, bob_player) = claim_seat(&mut room, Some("Bob".to_string()));
+        assert_eq!(bob, 1);
+        assert!(bob_player);
+
+        assert_eq!(room.members.len(), 2);
+        assert_eq!(room.game.players[1].name, "Bob");
+
+        // Game is full now: the next joiner watches.
+        let (carol, carol_player) = claim_seat(&mut room, Some("Carol".to_string()));
+        assert_eq!(carol, 2);
+        assert!(!carol_player);
+        assert_eq!(room.members.len(), 3);
+        // Spectators are not game players.
+        assert!(room.game.players.iter().all(|p| p.name != "Carol"));
+    }
+
+    #[tokio::test]
+    async fn deal_new_game_keeps_names_and_moves_extra_members_to_watch() {
+        let mut room = Room {
+            id: "RESTART".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string() },
+                Member { seat: 1, name: "Bob".to_string() },
+                Member { seat: 2, name: "Carol".to_string() },
+            ],
+            game: GameState::new(3),
+        };
+
+        // Shrink to two players: Carol moves to a spectator seat (>1).
+        deal_new_game(&mut room, 2);
+        assert_eq!(room.game.players.len(), 2);
+        assert_eq!(room.game.players[0].name, "Host");
+        assert_eq!(room.game.players[1].name, "Bob");
+        // Seats above the new player count still belong to the roster.
+        assert!(room.members.iter().any(|m| m.seat == 2 && m.name == "Carol"));
     }
 
     #[tokio::test]
@@ -492,7 +651,13 @@ mod tests {
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
         let game = GameState::new(2);
-        persist_game(&pool, "GAME01", &game).await;
+        persist_room(&pool, &Room {
+            id: "GAME01".to_string(),
+            members: vec![Member { seat: 0, name: String::new() }],
+            game,
+        })
+        .await;
+        let game = GameState::new(2);
         record_history(&pool, "GAME01", "yield", &GameAction::Yield, &game).await;
 
         let (seed, version): (i64, i64) =
