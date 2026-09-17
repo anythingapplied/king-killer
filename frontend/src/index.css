@@ -31,10 +31,12 @@ button:not(:disabled) {
   --thumb-w: clamp(1.6rem, 4.4vw, 3.1rem);
 
   /* Fluid type ramp. */
-  --t-micro: clamp(0.5rem, 0.42rem + 0.32vw, 0.75rem);
-  --t-label: clamp(0.5625rem, 0.47rem + 0.42vw, 0.9rem);
-  --t-body: clamp(0.75rem, 0.66rem + 0.42vw, 1.05rem);
-  --t-stat: clamp(1.05rem, 0.8rem + 1.15vw, 2.1rem);
+  /* Floors raised deliberately: nothing in the UI renders below 10px any more,
+     and the ramp tops out higher so a desktop isn't reading phone-sized text. */
+  --t-micro: clamp(0.625rem, 0.53rem + 0.34vw, 0.85rem);
+  --t-label: clamp(0.75rem, 0.63rem + 0.42vw, 1rem);
+  --t-body: clamp(0.875rem, 0.76rem + 0.45vw, 1.2rem);
+  --t-stat: clamp(1.15rem, 0.88rem + 1.2vw, 2.25rem);
 
   /* Notch / home-indicator insets, 0 on everything that doesn't have them. */
   --safe-t: env(safe-area-inset-top, 0px);

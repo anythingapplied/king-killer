@@ -315,6 +315,7 @@ fn test_hearts_resolve_before_diamonds_in_a_four_suit_combo() {
        cards happened to sit in the hand. */
     let mut state = GameState::new(2);
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Clubs, Rank::Jack, 800)));
+    state.current_player_index = 0; // the starting player is random now
     /* Cards leave the hand highest-index-first, so this ordering hands the
        resolver [Diamonds, Spades, Clubs, Hearts] - Diamonds ahead of Hearts. */
     state.players[0].hand = vec![
@@ -341,6 +342,7 @@ fn test_hearts_resolve_before_diamonds_in_a_four_suit_combo() {
 #[test]
 fn test_duplicate_indices_are_rejected() {
     let mut state = GameState::new(2);
+    state.current_player_index = 0; // the starting player is random now
     state.players[0].hand = vec![
         Card::new(Suit::Hearts, Rank::Number(5), 810),
         Card::new(Suit::Spades, Rank::Number(5), 811),
@@ -356,6 +358,7 @@ fn test_duplicate_indices_are_rejected() {
 #[test]
 fn test_out_of_range_index_leaves_hand_untouched() {
     let mut state = GameState::new(2);
+    state.current_player_index = 0; // the starting player is random now
     state.players[0].hand = vec![
         Card::new(Suit::Hearts, Rank::Number(5), 820),
         Card::new(Suit::Spades, Rank::Number(5), 821),
@@ -370,6 +373,7 @@ fn test_jester_does_not_retroactively_heal_or_draw() {
        heart was played, and playing a Jester later must not rewind it. */
     let mut state = GameState::new(2);
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 830)));
+    state.current_player_index = 0; // the starting player is random now
     state.players[0].hand = vec![
         Card::new(Suit::Hearts, Rank::Number(5), 831),
         Card::new(Suit::Spades, Rank::Number(10), 832),
@@ -395,6 +399,7 @@ fn test_jester_does_not_retroactively_heal_or_draw() {
 fn test_cannot_yield_when_everyone_else_already_has() {
     let mut state = GameState::new(3);
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 840)));
+    state.current_player_index = 0; // the starting player is random now
     for p in state.players.iter_mut() {
         p.hand = vec![Card::new(Suit::Spades, Rank::Number(10), 841); 4];
     }
@@ -429,4 +434,74 @@ fn test_solo_jester_on_an_unpayable_hit_ends_the_game() {
 
     state.use_solo_jester().unwrap();
     assert!(matches!(state.status, GameStatus::Lost(_)));
+}
+
+#[test]
+fn test_yield_is_recorded_as_an_empty_play() {
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 860)));
+    for p in state.players.iter_mut() {
+        // Hearts: the enemy is immune, so nothing shields the incoming hit away
+        // and the discard step actually happens.
+        p.hand = vec![Card::new(Suit::Hearts, Rank::Number(10), 861); 3];
+    }
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.last_played.as_ref().map(|c| c.len()), Some(1));
+    state.discard_cards(vec![0]).unwrap();
+
+    state.yield_turn().unwrap();
+    /* An empty play means "yielded" - the board must not keep showing the
+       previous player's cards as though nothing happened. */
+    assert_eq!(state.last_played, Some(Vec::new()));
+}
+
+#[test]
+fn test_play_log_keeps_each_play_grouped_and_attributed() {
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::King, 870)));
+    for p in state.players.iter_mut() {
+        p.hand = vec![Card::new(Suit::Hearts, Rank::Number(10), 871); 4];
+    }
+    state.current_player_index = 0;
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(3), 872),
+        Card::new(Suit::Spades, Rank::Number(3), 873),
+        Card::new(Suit::Hearts, Rank::Number(10), 874),
+        Card::new(Suit::Hearts, Rank::Number(10), 875),
+    ];
+    state.phase = TurnPhase::AwaitingPlay;
+
+    /* A pair played together must stay one entry, not two loose cards. */
+    state.play_cards(vec![0, 1]).unwrap();
+    assert_eq!(state.play_log.len(), 1);
+    assert_eq!(state.play_log[0].player, 0);
+    assert_eq!(state.play_log[0].cards.len(), 2);
+    assert_eq!(state.played_cards.len(), 2);
+
+    /* Spades shielded 6 of the King's 20, so 14 still has to be covered - one
+       ten is not enough. */
+    state.discard_cards(vec![0, 1]).unwrap();
+    state.yield_turn().unwrap();
+
+    /* A yield is an entry too, with no cards. */
+    assert_eq!(state.play_log.len(), 2);
+    assert_eq!(state.play_log[1].player, 1);
+    assert!(state.play_log[1].cards.is_empty());
+}
+
+#[test]
+fn test_play_log_resets_with_the_enemy() {
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 880)));
+    state.current_player_index = 0;
+    state.players[0].hand = vec![Card::new(Suit::Spades, Rank::King, 881)];
+    state.phase = TurnPhase::AwaitingPlay;
+
+    /* King is exactly 20: the Jack dies and a fresh enemy comes up. */
+    state.play_cards(vec![0]).unwrap();
+    assert!(state.play_log.is_empty(), "the log belongs to the enemy that just died");
+    assert!(state.played_cards.is_empty());
 }

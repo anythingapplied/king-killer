@@ -32,6 +32,12 @@ export interface Enemy {
     is_jester_active: boolean;
 }
 
+/** One turn's play against the current enemy. Empty `cards` means a yield. */
+export interface PlayRecord {
+    player: number;
+    cards: Card[];
+}
+
 export interface Player {
     id: number;
     name: string;
@@ -76,6 +82,9 @@ export interface GameState {
     castle_deck: Card[];
     discard_pile: Card[];
     played_cards: Card[];
+    /** Each play against the current enemy, still grouped as it was played.
+     *  Optional so a snapshot from an older server still type-checks. */
+    play_log?: PlayRecord[];
     last_played: Card[] | null;
     last_discarded: Card[] | null;
     active_enemy: Enemy | null;

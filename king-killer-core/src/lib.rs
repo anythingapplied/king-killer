@@ -186,6 +186,18 @@ impl Enemy {
     }
 }
 
+/// One turn's contribution to the current enemy: who acted, and what they put
+/// on the table. An empty `cards` is a yield.
+///
+/// `played_cards` flattens every card into one pile, which loses the grouping —
+/// you can't tell a played pair of 5s from two separate 5s. This keeps the
+/// shape of each play so the board can show the fight turn by turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlayRecord {
+    pub player: usize,
+    pub cards: Vec<Card>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: u32,
@@ -239,6 +251,14 @@ pub struct GameState {
     pub castle_deck: Vec<Card>,
     pub discard_pile: Vec<Card>,
     pub played_cards: Vec<Card>, // Cards played against current enemy
+    /// Every play against the current enemy, in order and still grouped as it
+    /// was played. Reset whenever the enemy changes. `#[serde(default)]` keeps
+    /// older snapshots loadable.
+    #[serde(default)]
+    pub play_log: Vec<PlayRecord>,
+    /// The most recent play. `Some(vec![])` means the player yielded — an empty
+    /// play is still a play, and the UI shows it as "Yield" rather than leaving
+    /// the previous player's cards on screen as if nothing happened.
     pub last_played: Option<Vec<Card>>,
     pub last_discarded: Option<Vec<Card>>,
     pub active_enemy: Option<Enemy>,
@@ -365,6 +385,7 @@ impl GameState {
             castle_deck,
             discard_pile: Vec::new(),
             played_cards: Vec::new(),
+            play_log: Vec::new(),
             last_played: None,
             last_discarded: None,
             active_enemy: None,
@@ -396,6 +417,7 @@ impl GameState {
             self.active_enemy = Some(Enemy::new(card));
             self.shield_value = 0;
             self.played_cards = Vec::new();
+            self.play_log = Vec::new();
             self.phase = TurnPhase::AwaitingPlay;
         } else {
             self.status = GameStatus::Won;
@@ -463,6 +485,10 @@ impl GameState {
 
         /* A card reached the table, so any run of yields is broken. */
         self.consecutive_yields = 0;
+        self.play_log.push(PlayRecord {
+            player: self.current_player_index,
+            cards: played_cards.clone(),
+        });
 
         if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
             let formerly_immune_suit = match self.active_enemy {
@@ -575,6 +601,12 @@ impl GameState {
             return Err("Cannot yield: every other player has already yielded".to_string());
         }
         self.consecutive_yields += 1;
+        /* Record the yield so the board reflects it. */
+        self.last_played = Some(Vec::new());
+        self.play_log.push(PlayRecord {
+            player: self.current_player_index,
+            cards: Vec::new(),
+        });
 
         self.enter_discard_phase()
     }

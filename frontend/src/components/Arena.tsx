@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { GameState, CombatEffect } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,6 +13,12 @@ interface ArenaProps {
 const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding }) => {
     // Only show warning if not in discard phase
     const showWarning = isImmuneWarning && !isDiscarding;
+
+    // Hover on desktop, tap on touch — `play_log` keeps every play against this
+    // enemy grouped as it was played, which `played_cards` flattens away.
+    const [showPlays, setShowPlays] = useState(false);
+    const playLog = gameState.play_log ?? [];
+    const playerLabel = (i: number) => gameState.players[i]?.name || `P${i + 1}`;
 
     return (
         <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
@@ -164,18 +170,54 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
             {/* Right: Last Play Sidebar */}
             <div className="flex flex-col items-center justify-center gap-4 flex-shrink-0 w-12 sm:w-16 md:w-28">
                 <AnimatePresence>
-                    {gameState.last_played && gameState.last_played.length > 0 && (
+                    {gameState.last_played && (
                         <motion.div 
                             initial={{ x: 50, opacity: 0 }} 
                             animate={{ x: 0, opacity: 1 }} 
                             exit={{ x: 50, opacity: 0 }}
                             data-testid="previous-play-area" 
-                            className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full"
+                            onMouseEnter={() => setShowPlays(true)}
+                            onMouseLeave={() => setShowPlays(false)}
+                            onClick={() => setShowPlays(v => !v)}
+                            className={`bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full relative ${playLog.length > 0 ? 'cursor-pointer hover:border-slate-500' : ''}`}
                         >
-                            <span className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1 text-center leading-tight">Last Play</span>
-                            <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
-                                {gameState.last_played.map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
-                            </div>
+                            <span className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1 text-center leading-tight">
+                                Last Play{playLog.length > 0 ? ` (${playLog.length})` : ''}
+                            </span>
+
+                            {/* Every play so far against this enemy, newest first. */}
+                            {showPlays && playLog.length > 0 && (
+                                <div
+                                    data-testid="play-log-popover"
+                                    className="absolute right-full top-0 mr-2 z-[130] w-52 sm:w-60 max-h-[60vh] overflow-y-auto bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 text-left"
+                                >
+                                    <div className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1.5">
+                                        This enemy — {playLog.length} play{playLog.length === 1 ? '' : 's'}
+                                    </div>
+                                    <div className="flex flex-col gap-1.5">
+                                        {playLog.slice().reverse().map((rec, i) => (
+                                            <div key={playLog.length - 1 - i} className="flex items-center gap-1.5 border-t border-white/5 pt-1.5 first:border-0 first:pt-0">
+                                                <span className="t-micro font-black text-slate-500 w-10 shrink-0 truncate">{playerLabel(rec.player)}</span>
+                                                {rec.cards.length === 0 ? (
+                                                    <span className="t-micro font-black text-amber-400 uppercase tracking-widest">Yield</span>
+                                                ) : (
+                                                    <div className="flex gap-0.5 flex-wrap">
+                                                        {rec.cards.map(c => <Card key={c.id} card={c} className="w-5 sm:w-6 shadow" />)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {gameState.last_played.length === 0 ? (
+                                /* An empty play is a yield. */
+                                <span className="t-label font-black text-amber-400 uppercase tracking-widest text-center">Yield</span>
+                            ) : (
+                                <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
+                                    {gameState.last_played.map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
+                                </div>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>

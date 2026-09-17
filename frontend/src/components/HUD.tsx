@@ -62,7 +62,7 @@ const HUD: React.FC<HUDProps> = ({
         <div data-testid="hud" className="z-[100] bg-slate-800/90 p-1.5 sm:p-2 rounded-xl shadow-2xl border border-slate-700/50 backdrop-blur-md relative max-w-2xl mx-auto w-full flex-shrink-0">
             <div className="flex justify-between items-center gap-1 px-1 mb-1">
                 <div className="flex gap-1 flex-shrink-0">
-                    <button onClick={onMenuClick} className="t-micro bg-slate-700 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Menu</button>
+                    <button onClick={onMenuClick} title="Leave this room and return to the main menu" className="t-micro bg-slate-700 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Exit</button>
                     <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
                     {/* Solo never chimes (the turn comes straight back), so the
                         control would be dead weight on the tightest layout. */}
@@ -158,7 +158,7 @@ const HUD: React.FC<HUDProps> = ({
                     // index the long way round and compare it to itself.)
                     const isDrawer = gameState.current_player_index === i;
                     return (
-                        <div key={i} className={`t-micro px-2 py-0.5 rounded-full font-black border transition-all flex items-center gap-1 relative max-w-[8rem] ${gameState.current_player_index === i ? 'bg-blue-600 border-blue-400 shadow-lg scale-105' : 'bg-slate-900/50 border-slate-700 opacity-50'}`}>
+                        <div key={i} className={`t-label px-2 py-0.5 rounded-full font-black border transition-all flex items-center gap-1 relative max-w-[8rem] ${gameState.current_player_index === i ? 'bg-blue-600 border-blue-400 shadow-lg scale-105' : 'bg-slate-900/50 border-slate-700 opacity-50'}`}>
                             {myPlayerId === i && <span className="w-1 h-1 bg-green-400 rounded-full animate-pulse flex-shrink-0"></span>}
                             <span className="truncate">{displayName}</span>: {p.hand.length}
                             <AnimatePresence>

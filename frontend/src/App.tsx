@@ -114,7 +114,7 @@ const App: React.FC = () => {
                 reconnecting={reconnecting}
                 currentTierEnemies={currentTierEnemies}
                 muted={muted}
-                onMenuClick={exitToMenu}
+                onMenuClick={() => exitToMenu()}
                 onToggleMute={toggleMute}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
@@ -204,7 +204,7 @@ const App: React.FC = () => {
                             )}
                             <button onClick={restartTable} className="t-label w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-blue-800 uppercase tracking-widest mb-3 sm:mb-4">Play Again</button>
                             <button onClick={() => setShowNewGame(true)} className="t-label w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-amber-800 uppercase tracking-widest mb-3 sm:mb-4">New Game</button>
-                            <button onClick={exitToMenu} className="t-label w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest">Main Menu</button>
+                            <button onClick={() => exitToMenu()} className="t-label w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest">Main Menu</button>
                         </motion.div>
                     </motion.div>
                 )}

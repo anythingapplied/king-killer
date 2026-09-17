@@ -264,6 +264,11 @@ export const useGameLogic = () => {
     if (!id || intentionalCloseRef.current) return;
     const socket = new WebSocket(`${WS_BASE}/api/ws/${id}`);
     ws.current = socket;
+    // A socket we have already moved on from can still deliver a frame that was
+    // in flight when we closed it. Applying it overwrites the room we just
+    // switched to with the one we left — which is exactly the "sucked back into
+    // the game I just left" symptom. Ignore anything from a superseded socket.
+    const isStale = () => ws.current !== socket;
     const onState = (payload: RoomSnapshot) => {
       gameConnectedRef.current = true;
       reconnectingRef.current = false;
@@ -292,6 +297,7 @@ export const useGameLogic = () => {
       setRoster(payload.members);
     };
     socket.onmessage = (event) => {
+      if (isStale()) return;
       // A malformed frame must not take the handler (and the socket) down.
       let msg: unknown;
       try {
@@ -310,7 +316,7 @@ export const useGameLogic = () => {
       }
     };
     socket.onclose = () => {
-      if (intentionalCloseRef.current) return;
+      if (isStale() || intentionalCloseRef.current) return;
       // The server stopped itself (idle) or restarted. Resume invisibly:
       // retry with backoff; on success the server sends State and we continue.
       reconnectingRef.current = true;
@@ -438,19 +444,24 @@ export const useGameLogic = () => {
     setUrlGameId(data.id);
   };
 
-  const setUrlGameId = (id: string) => {
+  // pushState, not replaceState: entering and leaving a game each add a history
+  // entry, so the browser Back button steps back into the game you just left
+  // instead of navigating out of the app entirely.
+  const setUrlGameId = (id: string, push = true) => {
     const url = new URL(window.location.href);
     url.searchParams.set('game', id);
-    window.history.replaceState(null, '', url);
+    if (push) window.history.pushState(null, '', url);
+    else window.history.replaceState(null, '', url);
   };
 
-  const clearUrlGameId = () => {
+  const clearUrlGameId = (push = true) => {
     const url = new URL(window.location.href);
     url.searchParams.delete('game');
-    window.history.replaceState(null, '', url);
+    if (push) window.history.pushState(null, '', url);
+    else window.history.replaceState(null, '', url);
   };
 
-  const joinGame = async (input: string) => {
+  const joinGame = async (input: string, push = true) => {
     const cleanId = input.trim().toUpperCase();
     let id = cleanId;
     if (cleanId.startsWith('HTTP')) {
@@ -475,7 +486,7 @@ export const useGameLogic = () => {
         setGameState(snap.game);
         setRoster(snap.members);
         setMyPlayerId(savedSeat);
-        setUrlGameId(id);
+        setUrlGameId(id, push);
         return;
       }
 
@@ -492,7 +503,7 @@ export const useGameLogic = () => {
         setRoster(snap.members);
         setMyPlayerId(data.seat_index);
         localStorage.setItem(`seat_${id}`, data.seat_index.toString());
-        setUrlGameId(id);
+        setUrlGameId(id, push);
       } else {
         alert("Could not join the game. Please try again.");
       }
@@ -507,6 +518,11 @@ export const useGameLogic = () => {
     if (gameParam) joinGame(gameParam);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Keep the live game id readable from the popstate listener without making
+  // the listener depend on it (it is installed once).
+  const gameIdRef = useRef<string | null>(null);
+  useEffect(() => { gameIdRef.current = gameId; }, [gameId]);
 
   const sendAction = (action: GameAction) => {
     if (ws.current?.readyState === WebSocket.OPEN) {
@@ -562,7 +578,9 @@ export const useGameLogic = () => {
     }
   };
 
-  const exitToMenu = () => {
+  // `push` is false when the browser itself navigated (popstate) — the history
+  // entry already exists and pushing another would break Forward.
+  const exitToMenu = (push = true) => {
     intentionalCloseRef.current = true;
     reconnectingRef.current = false;
     if (reconnectTimerRef.current) {
@@ -575,11 +593,22 @@ export const useGameLogic = () => {
       ws.current.close();
       ws.current = null;
     }
-    clearUrlGameId();
+    clearUrlGameId(push);
     setGameId(null); setGameState(null); setRoster([]); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
     setDefeatFlight(null);
     setReconnecting(false);
   };
+
+  useEffect(() => {
+    const onPop = () => {
+      const param = new URLSearchParams(window.location.search).get('game')?.toUpperCase() || null;
+      if (param && param !== gameIdRef.current) void joinGame(param, false);
+      else if (!param && gameIdRef.current) exitToMenu(false);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const restartTable = () => { sendAction({ type: 'Reset' }); setShowGameOver(false); };
 
