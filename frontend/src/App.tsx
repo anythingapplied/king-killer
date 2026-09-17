@@ -4,6 +4,7 @@ import HUD from './components/HUD';
 import Arena from './components/Arena';
 import HandArea from './components/HandArea';
 import ActionFooter from './components/ActionFooter';
+import GameLog from './components/GameLog';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -37,6 +38,7 @@ const App: React.FC = () => {
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
 
+    const [showLog, setShowLog] = useState(false);
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
     const [showNewGame, setShowNewGame] = useState(false);
 
@@ -116,6 +118,7 @@ const App: React.FC = () => {
                 muted={muted}
                 onMenuClick={() => exitToMenu()}
                 onToggleMute={toggleMute}
+                onLogClick={() => setShowLog(true)}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
                 onNewGameClick={() => setShowNewGame(true)}
@@ -180,6 +183,10 @@ const App: React.FC = () => {
             {defeatFlight && (
                 <FlightOverlay flight={defeatFlight} onDone={() => finishDefeatFlight(defeatFlight.id)} />
             )}
+
+            <AnimatePresence>
+                {showLog && <GameLog gameState={localGameState} onClose={() => setShowLog(false)} />}
+            </AnimatePresence>
 
             {/* Global Overlays */}
             <AnimatePresence>

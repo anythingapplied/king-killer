@@ -16,6 +16,7 @@ interface HUDProps {
     currentTierEnemies: GameState['castle_deck'];
     onMenuClick: () => void;
     onToggleMute: () => void;
+    onLogClick: () => void;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
     onNewGameClick: () => void;
@@ -27,7 +28,7 @@ const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
     myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted,
-    onMenuClick, onToggleMute, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
+    onMenuClick, onToggleMute, onLogClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator ? undefined : gameState.players[myPlayerId];
@@ -64,6 +65,7 @@ const HUD: React.FC<HUDProps> = ({
                 <div className="flex gap-1 flex-shrink-0">
                     <button onClick={onMenuClick} title="Leave this room and return to the main menu" className="t-micro bg-slate-700 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-600 shadow uppercase hover:bg-slate-600">Exit</button>
                     <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
+                    <button onClick={onLogClick} title="Show the game log" aria-label="Show the game log" data-testid="log-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none">📜</button>
                     {/* Solo never chimes (the turn comes straight back), so the
                         control would be dead weight on the tightest layout. */}
                     {!isSolo && (

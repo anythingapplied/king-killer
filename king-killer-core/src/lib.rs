@@ -186,6 +186,34 @@ impl Enemy {
     }
 }
 
+/// What happened in a single game-log entry. Unit variants, so they serialize
+/// as plain strings and the client can switch on them directly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LogKind {
+    Played,
+    Yielded,
+    Discarded,
+    /// A solo player burned a Jester to refresh their hand.
+    Jester,
+    EnemyDefeated,
+    EnemyRevealed,
+}
+
+/// One event in the running game log.
+///
+/// `player` is `None` for table events that belong to nobody (an enemy being
+/// revealed or defeated). `cards` is empty for a yield.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogEntry {
+    pub player: Option<usize>,
+    pub kind: LogKind,
+    pub cards: Vec<Card>,
+}
+
+/// The whole state is broadcast on every action, so the log is capped to keep
+/// that payload bounded. Oldest entries fall off the front.
+const GAME_LOG_CAP: usize = 200;
+
 /// One turn's contribution to the current enemy: who acted, and what they put
 /// on the table. An empty `cards` is a yield.
 ///
@@ -256,6 +284,10 @@ pub struct GameState {
     /// older snapshots loadable.
     #[serde(default)]
     pub play_log: Vec<PlayRecord>,
+    /// Running history of the whole game, oldest first. Unlike `play_log` this
+    /// survives across enemies. Capped at [`GAME_LOG_CAP`].
+    #[serde(default)]
+    pub game_log: Vec<LogEntry>,
     /// The most recent play. `Some(vec![])` means the player yielded — an empty
     /// play is still a play, and the UI shows it as "Yield" rather than leaving
     /// the previous player's cards on screen as if nothing happened.
@@ -386,6 +418,7 @@ impl GameState {
             discard_pile: Vec::new(),
             played_cards: Vec::new(),
             play_log: Vec::new(),
+            game_log: Vec::new(),
             last_played: None,
             last_discarded: None,
             active_enemy: None,
@@ -418,6 +451,10 @@ impl GameState {
             self.shield_value = 0;
             self.played_cards = Vec::new();
             self.play_log = Vec::new();
+            let revealed = self.active_enemy.as_ref().map(|e| e.card.clone());
+            if let Some(card) = revealed {
+                self.log(None, LogKind::EnemyRevealed, vec![card]);
+            }
             self.phase = TurnPhase::AwaitingPlay;
         } else {
             self.status = GameStatus::Won;
@@ -437,6 +474,7 @@ impl GameState {
         // that means before any cards are discarded).
 
         self.solo_jesters -= 1;
+        self.log(Some(self.current_player_index), LogKind::Jester, Vec::new());
         let refill_to = self.max_hand_size();
         let player = &mut self.players[0];
 
@@ -489,6 +527,7 @@ impl GameState {
             player: self.current_player_index,
             cards: played_cards.clone(),
         });
+        self.log(Some(self.current_player_index), LogKind::Played, played_cards.clone());
 
         if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
             let formerly_immune_suit = match self.active_enemy {
@@ -557,6 +596,8 @@ impl GameState {
             let enemy = self.active_enemy.take().unwrap();
             let exact_kill = enemy.current_health == 0;
             self.last_enemy_fate = Some(if exact_kill { EnemyFate::Tavern } else { EnemyFate::Discard });
+            /* Log before the card is moved out into a pile. */
+            self.log(None, LogKind::EnemyDefeated, vec![enemy.card.clone()]);
             if exact_kill {
                 self.tavern_deck.push(enemy.card);
             } else {
@@ -607,6 +648,7 @@ impl GameState {
             player: self.current_player_index,
             cards: Vec::new(),
         });
+        self.log(Some(self.current_player_index), LogKind::Yielded, Vec::new());
 
         self.enter_discard_phase()
     }
@@ -645,6 +687,8 @@ impl GameState {
                 discarded_cards.push(player.hand.remove(idx));
             }
 
+            self.log(Some(self.current_player_index), LogKind::Discarded, discarded_cards.clone());
+
             let discard_value: i32 = discarded_cards.iter().map(|c| c.attack_value() as i32).sum();
             
             if discard_value < damage_to_take {
@@ -663,6 +707,22 @@ impl GameState {
             Ok(())
         } else {
             Err("Not in discard phase".to_string())
+        }
+    }
+
+    /// Test-only wrapper over the private [`GameState::log`], so the cap can be
+    /// exercised without making the logger itself part of the public API.
+    #[doc(hidden)]
+    pub fn log_for_test(&mut self, player: Option<usize>, kind: LogKind, cards: Vec<Card>) {
+        self.log(player, kind, cards);
+    }
+
+    /// Appends a game-log entry, trimming the oldest once the cap is hit.
+    fn log(&mut self, player: Option<usize>, kind: LogKind, cards: Vec<Card>) {
+        self.game_log.push(LogEntry { player, kind, cards });
+        if self.game_log.len() > GAME_LOG_CAP {
+            let excess = self.game_log.len() - GAME_LOG_CAP;
+            self.game_log.drain(0..excess);
         }
     }
 

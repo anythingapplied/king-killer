@@ -32,6 +32,15 @@ export interface Enemy {
     is_jester_active: boolean;
 }
 
+export type LogKind = 'Played' | 'Yielded' | 'Discarded' | 'Jester' | 'EnemyDefeated' | 'EnemyRevealed';
+
+/** One event in the running game log. `player` is null for table events. */
+export interface LogEntry {
+    player: number | null;
+    kind: LogKind;
+    cards: Card[];
+}
+
 /** One turn's play against the current enemy. Empty `cards` means a yield. */
 export interface PlayRecord {
     player: number;
@@ -85,6 +94,8 @@ export interface GameState {
     /** Each play against the current enemy, still grouped as it was played.
      *  Optional so a snapshot from an older server still type-checks. */
     play_log?: PlayRecord[];
+    /** Whole-game history, oldest first. Optional for older snapshots. */
+    game_log?: LogEntry[];
     last_played: Card[] | null;
     last_discarded: Card[] | null;
     active_enemy: Enemy | null;

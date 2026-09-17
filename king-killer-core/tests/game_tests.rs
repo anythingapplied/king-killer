@@ -505,3 +505,44 @@ fn test_play_log_resets_with_the_enemy() {
     assert!(state.play_log.is_empty(), "the log belongs to the enemy that just died");
     assert!(state.played_cards.is_empty());
 }
+
+#[test]
+fn test_game_log_records_the_whole_game_not_just_one_enemy() {
+    let mut state = GameState::new(3);
+    /* Every game starts by revealing the first enemy. */
+    assert_eq!(state.game_log.len(), 1);
+    assert_eq!(state.game_log[0].kind, LogKind::EnemyRevealed);
+    assert_eq!(state.game_log[0].player, None);
+
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 890)));
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    for p in state.players.iter_mut() {
+        p.hand = vec![Card::new(Suit::Hearts, Rank::Number(10), 891); 3];
+    }
+
+    state.play_cards(vec![0]).unwrap();
+    state.discard_cards(vec![0]).unwrap();
+    state.yield_turn().unwrap();
+
+    let kinds: Vec<LogKind> = state.game_log.iter().skip(1).map(|e| e.kind).collect();
+    assert_eq!(kinds, vec![LogKind::Played, LogKind::Discarded, LogKind::Yielded]);
+    assert_eq!(state.game_log[1].player, Some(0));
+    assert_eq!(state.game_log[1].cards.len(), 1);
+    assert_eq!(state.game_log[3].player, Some(1));
+
+    /* play_log is per-enemy; game_log is not. */
+    assert!(state.game_log.len() > state.play_log.len());
+}
+
+#[test]
+fn test_game_log_is_capped() {
+    let mut state = GameState::new(2);
+    for i in 0..250 {
+        state.log_for_test(Some(0), LogKind::Yielded, Vec::new());
+        let _ = i;
+    }
+    assert!(state.game_log.len() <= 200, "log grew to {}", state.game_log.len());
+    /* The newest entries are the ones kept. */
+    assert_eq!(state.game_log.last().map(|e| e.kind), Some(LogKind::Yielded));
+}
