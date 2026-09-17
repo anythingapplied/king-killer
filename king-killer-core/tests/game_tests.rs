@@ -140,3 +140,102 @@ fn test_last_enemy_fate_none_at_start() {
     let state = GameState::new(2);
     assert_eq!(state.last_enemy_fate, None);
 }
+
+#[test]
+fn test_new_with_seed_is_deterministic() {
+    let a = GameState::new_with_seed(42, 2);
+    let b = GameState::new_with_seed(42, 2);
+    assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+    assert_eq!(a.seed, 42);
+    assert_eq!(a.version, RULES_VERSION);
+
+    let c = GameState::new_with_seed(43, 2);
+    assert_ne!(
+        serde_json::to_string(&a).unwrap(),
+        serde_json::to_string(&c).unwrap()
+    );
+}
+
+#[test]
+fn test_actions_replay_from_seed() {
+    let seed = 12345u64;
+    let mut game = GameState::new_with_seed(seed, 2);
+    let snapshot = game.clone();
+
+    // Replay from only the saved seed: deal + RNG progression must be identical.
+    let mut replay = GameState::new_with_seed(seed, 2);
+
+    game.play_cards(vec![0]).unwrap();
+    replay.play_cards(vec![0]).unwrap();
+    assert_eq!(
+        serde_json::to_string(&game).unwrap(),
+        serde_json::to_string(&replay).unwrap()
+    );
+    assert_ne!(
+        serde_json::to_string(&snapshot).unwrap(),
+        serde_json::to_string(&game).unwrap()
+    );
+    assert_eq!(RULES_VERSION, 2, "bump when rules or RNG change");
+}
+
+#[test]
+fn test_jester_lets_player_choose_next_in_multiplayer() {
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 700)));
+    state.players[0].hand = vec![Card::joker(701)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+
+    // Steps 3 and 4 are skipped, so the chooser keeps the turn until they pick.
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+    assert_eq!(state.current_player_index, 0);
+    assert!(state.active_enemy.as_ref().unwrap().is_jester_active);
+
+    state.choose_next_player(2).unwrap();
+    assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+    assert_eq!(state.current_player_index, 2);
+}
+
+#[test]
+fn test_jester_can_choose_self() {
+    let mut state = GameState::new(4);
+    state.players[1].hand = vec![Card::joker(710)];
+    state.current_player_index = 1;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.play_cards(vec![0]).unwrap();
+
+    state.choose_next_player(1).unwrap();
+    assert_eq!(state.current_player_index, 1);
+    assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+}
+
+#[test]
+fn test_choose_next_player_rejected_outside_jester_choice() {
+    let mut state = GameState::new(3);
+    let err = state.choose_next_player(1).unwrap_err();
+    assert!(err.contains("next-player"));
+
+    let mut state = GameState::new(3);
+    state.players[0].hand = vec![Card::joker(720)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.play_cards(vec![0]).unwrap();
+    assert!(state.choose_next_player(9).is_err());
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+}
+
+#[test]
+fn test_jester_two_player_auto_advances() {
+    let mut state = GameState::new(2);
+    state.players[0].hand = vec![Card::joker(730)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+
+    // No meaningful choice with two players: play simply passes on.
+    assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+    assert_eq!(state.current_player_index, 1);
+}

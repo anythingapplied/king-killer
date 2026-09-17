@@ -1,6 +1,53 @@
-use rand::seq::SliceRandom;
-use rand::rng;
 use serde::{Deserialize, Serialize};
+
+/// Bump whenever game rules OR the deterministic RNG algorithm change.
+/// History replay and snapshot migration key off this value.
+pub const RULES_VERSION: u32 = 2;
+
+/// Deterministic, portable PRNG for all game randomness (SplitMix64).
+///
+/// Pure 64-bit wrapping integer math, so output is identical on every
+/// platform/toolchain for the same seed — required for replaying `game_history`
+/// from a stored seed. It is intentionally NOT a CSPRNG (irrelevant for a card
+/// game). Changing this algorithm MUST bump [`RULES_VERSION`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameRng {
+    state: u64,
+}
+
+impl Default for GameRng {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl GameRng {
+    pub fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform index in `0..=max`. Mod-bias is negligible for the deck sizes
+    /// used here (< 2^-40) and determinism is what matters.
+    fn next_index(&mut self, max: usize) -> usize {
+        (self.next_u64() % (max as u64 + 1)) as usize
+    }
+}
+
+/// Fisher–Yates shuffle using [`GameRng`].
+fn shuffle<T>(slice: &mut [T], rng: &mut GameRng) {
+    for i in (1..slice.len()).rev() {
+        let j = rng.next_index(i);
+        slice.swap(i, j);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Suit {
@@ -104,6 +151,7 @@ impl Enemy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: u32,
+    pub name: String,
     pub hand: Vec<Card>,
 }
 
@@ -111,6 +159,9 @@ pub struct Player {
 pub enum TurnPhase {
     AwaitingPlay,
     AwaitingDiscard { damage_to_take: i32 },
+    /// A Jester was just played in a 3+ player game. Step 3 and 4 are skipped
+    /// and the player who played the Jester picks who takes the next turn.
+    AwaitingNextPlayer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,8 +179,22 @@ pub enum EnemyFate {
     Discard,
 }
 
+fn current_rules_version() -> u32 {
+    RULES_VERSION
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
+    /// Rules version that produced this state. Replay/migration gate on it.
+    #[serde(default = "current_rules_version")]
+    pub version: u32,
+    /// Original seed for this deal. `GameRng::new(seed)` reproduces the deal.
+    #[serde(default)]
+    pub seed: u64,
+    /// Live deterministic RNG state (advances with every random draw/shuffle).
+    /// `#[serde(default)]` lets legacy snapshots (pre-seed) still load.
+    #[serde(default)]
+    pub rng: GameRng,
     pub players: Vec<Player>,
     pub current_player_index: usize,
     pub tavern_deck: Vec<Card>,
@@ -150,8 +215,27 @@ pub struct GameState {
 }
 
 impl GameState {
+    /// Create a game deal with a fresh (random) seed.
     pub fn new(num_players: u32) -> Self {
-        let mut rng = rng();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Mix wall-clock time with a per-process counter so seeds don't collide
+        // even if games are created in the same nanosecond.
+        let seed = nanos ^ counter.rotate_left(32) ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        Self::new_with_seed(seed, num_players)
+    }
+
+    /// Create a game deal from an explicit seed. Identical deals for identical
+    /// seeds — the basis for replaying `game_history` from a stored seed.
+    pub fn new_with_seed(seed: u64, num_players: u32) -> Self {
+        let mut rng = GameRng::new(seed);
         let mut next_id = 1;
 
         // Create Castle Deck
@@ -163,7 +247,7 @@ impl GameState {
                 c
             })
             .collect();
-        kings.shuffle(&mut rng);
+        shuffle(&mut kings, &mut rng);
 
         let mut queens: Vec<Card> = Suit::all()
             .iter()
@@ -173,7 +257,7 @@ impl GameState {
                 c
             })
             .collect();
-        queens.shuffle(&mut rng);
+        shuffle(&mut queens, &mut rng);
 
         let mut jacks: Vec<Card> = Suit::all()
             .iter()
@@ -183,7 +267,7 @@ impl GameState {
                 c
             })
             .collect();
-        jacks.shuffle(&mut rng);
+        shuffle(&mut jacks, &mut rng);
 
         let mut castle_deck = Vec::new();
         castle_deck.extend(kings);
@@ -213,7 +297,7 @@ impl GameState {
             tavern_deck.push(Card::joker(next_id));
             next_id += 1;
         }
-        tavern_deck.shuffle(&mut rng);
+        shuffle(&mut tavern_deck, &mut rng);
 
         // Create Players
         let mut players = Vec::new();
@@ -224,10 +308,13 @@ impl GameState {
                     hand.push(card);
                 }
             }
-            players.push(Player { id: i, hand });
+            players.push(Player { id: i, name: String::new(), hand });
         }
 
         let mut state = GameState {
+            version: RULES_VERSION,
+            seed,
+            rng,
             players,
             current_player_index: 0,
             tavern_deck,
@@ -344,7 +431,13 @@ impl GameState {
             }
             self.last_played = Some(played_cards.clone());
             self.discard_pile.extend(played_cards);
-            self.current_player_index = (self.current_player_index + 1) % self.players.len();
+            if self.players.len() > 2 {
+                // The Jester's player chooses who takes the next turn. With only
+                // two players there is no choice to make, so play just passes on.
+                self.phase = TurnPhase::AwaitingNextPlayer;
+            } else {
+                self.current_player_index = (self.current_player_index + 1) % self.players.len();
+            }
             return Ok(());
         }
 
@@ -384,6 +477,20 @@ impl GameState {
         }
 
         self.enter_discard_phase()
+    }
+
+    /// Resolve the choice opened by playing a Jester in a 3+ player game:
+    /// choose any player (including the Jester's own player) to go next.
+    pub fn choose_next_player(&mut self, index: usize) -> Result<(), String> {
+        if self.phase != TurnPhase::AwaitingNextPlayer {
+            return Err("Not awaiting a next-player choice".to_string());
+        }
+        if index >= self.players.len() {
+            return Err("Invalid player index".to_string());
+        }
+        self.current_player_index = index;
+        self.phase = TurnPhase::AwaitingPlay;
+        Ok(())
     }
 
     pub fn yield_turn(&mut self) -> Result<(), String> {
@@ -545,8 +652,7 @@ impl GameState {
             }
             match suit {
                 Suit::Hearts => {
-                    let mut rng = rng();
-                    self.discard_pile.shuffle(&mut rng);
+                    shuffle(&mut self.discard_pile, &mut self.rng);
                     self.last_discarded = None;
                     for _ in 0..attack_value {
                         if let Some(card) = self.discard_pile.pop() {
