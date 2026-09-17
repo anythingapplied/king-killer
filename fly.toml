@@ -5,6 +5,7 @@ app = "king-killer"
 
 [env]
   PORT = "3000"
+  DATA_DIR = "/data"
 
 [http_service]
   internal_port = 3000
@@ -12,3 +13,7 @@ app = "king-killer"
   auto_stop_machines = true
   auto_start_machines = true
   min_machines_running = 0
+
+[mounts]
+  source = "kingkiller_data"
+  destination = "/data"

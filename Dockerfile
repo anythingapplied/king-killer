@@ -20,8 +20,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+RUN mkdir -p /data
 COPY --from=backend /app/target/release/king-killer-api /app/king-killer-api
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 ENV PORT=3000
+ENV DATA_DIR=/data
 EXPOSE 3000
 CMD ["/app/king-killer-api"]
