@@ -1,6 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { GameState, GameAction, Card as CardType, CombatEffect } from '../types';
 import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
+import { decideBufferedActionsToReplay } from '../reconnectLogic';
+import { playBellChime } from '../sound';
+
+const BASE_TITLE = 'King Killer';
+const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
 
 const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 const API_BASE = import.meta.env.VITE_API_BASE ?? (IS_LOCAL ? `http://${window.location.hostname}:3000` : '');
@@ -37,21 +42,65 @@ export const useGameLogic = () => {
   const [showGameOver, setShowGameOver] = useState(true);
   const [activeEffects, setActiveEffects] = useState<CombatEffect[]>([]);
   const [defeatFlight, setDefeatFlight] = useState<DefeatFlight | null>(null);
-  const [disconnectNotice, setDisconnectNotice] = useState<string | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const gameConnectedRef = useRef(false);
   const intentionalCloseRef = useRef(false);
-  const shuttingDownRef = useRef(false);
+  const reconnectingRef = useRef(false);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bufferedActionsRef = useRef<GameAction[]>([]);
+  const backoffRef = useRef(500);
+  const lastGameStateJsonRef = useRef<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  // Games whose join request is currently in flight. Joining claims a seat on
+  // the server, so a duplicate (React StrictMode double-invokes the URL-join
+  // effect, and a user can press Enter twice) must never fire two join calls.
+  const joiningRef = useRef<Set<string>>(new Set());
+  // Detects the transition into "my turn" so the chime only rings when the
+  // turn actually arrives, not on the initial load (e.g. you created the game).
+  const wasMyTurnRef = useRef<boolean | null>(null);
 
-  const persistNotice = (message: string) => {
-    setDisconnectNotice(message);
-    sessionStorage.setItem('kingkiller_disconnect_notice', message);
-  };
+  const isMyTurn = localGameState?.current_player_index === myPlayerId;
+  const isSolo = localGameState?.players.length === 1;
+  const isChoosingNextPlayer = localGameState?.phase === 'AwaitingNextPlayer';
 
-  const dismissNotice = () => {
-    setDisconnectNotice(null);
-    sessionStorage.removeItem('kingkiller_disconnect_notice');
-  };
+  // Ring the bell only when a turn actually arrives mid-game. Solo play is
+  // excluded: the turn returns to you after every action, so each return would
+  // just be noise. prev === null (first state evaluation) is also skipped so
+  // joining/resuming into a game where it's already our turn stays silent.
+  useEffect(() => {
+    if (isSolo || !localGameState || myPlayerId === null) return;
+    const prev = wasMyTurnRef.current;
+    wasMyTurnRef.current = isMyTurn;
+    if (prev === null || prev === isMyTurn) return;
+    if (isMyTurn) playBellChime();
+  }, [localGameState, myPlayerId, isMyTurn, isSolo]);
+
+  // Flash the tab title while it's our turn and the tab is unfocused, so a
+  // player in another tab notices. Stops as soon as the tab gets focus.
+  useEffect(() => {
+    if (!isMyTurn) {
+      document.title = BASE_TITLE;
+      return;
+    }
+    let flashing = false;
+    const tick = () => {
+      if (document.hasFocus()) {
+        document.title = BASE_TITLE;
+        return;
+      }
+      flashing = !flashing;
+      document.title = flashing ? YOUR_TURN_TITLE : BASE_TITLE;
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    const onFocus = () => { document.title = BASE_TITLE; };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      document.title = BASE_TITLE;
+    };
+  }, [isMyTurn]);
 
   // Commit the server state that a defeat's in-flight card just landed at.
   const finishDefeatFlight = (flightId?: number) => {
@@ -59,11 +108,6 @@ export const useGameLogic = () => {
     if (gameState) setLocalGameState(gameState);
     if (gameState?.status !== 'InProgress') setShowGameOver(true);
   };
-
-  useEffect(() => {
-    const saved = sessionStorage.getItem('kingkiller_disconnect_notice');
-    if (saved) setDisconnectNotice(saved);
-  }, []);
 
   useEffect(() => {
     if (!gameState) return;
@@ -154,60 +198,100 @@ export const useGameLogic = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState]);
 
+  // Restores a previously-saved seat (e.g. resuming after a server restart).
+  // Seat claiming itself lives in `joinGame`/`createGame` so a player only ever
+  // consumes one seat.
   useEffect(() => {
-    if (gameId && myPlayerId === null) {
-      const savedSeat = localStorage.getItem(`seat_${gameId}`);
-      if (savedSeat !== null) setMyPlayerId(parseInt(savedSeat));
-      else {
-        fetch(`${API_BASE}/api/game/${gameId}/join`, { method: 'POST' }).then(res => res.json()).then(data => {
-            setMyPlayerId(data.seat_index);
-            localStorage.setItem(`seat_${gameId}`, data.seat_index.toString());
-        });
-      }
-    }
+    if (!gameId || myPlayerId !== null) return;
+    const savedSeat = localStorage.getItem(`seat_${gameId}`);
+    if (savedSeat !== null) setMyPlayerId(parseInt(savedSeat));
   }, [gameId, myPlayerId]);
+
+  const connectWebSocket = useCallback(() => {
+    const id = gameId;
+    if (!id || intentionalCloseRef.current) return;
+    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}`);
+    ws.current = socket;
+    const onState = (payload: GameState) => {
+      gameConnectedRef.current = true;
+      reconnectingRef.current = false;
+      setReconnecting(false);
+      backoffRef.current = 500;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      const receivedJson = JSON.stringify(payload);
+      // If the server was asleep, the state we just received is identical to
+      // what we were already showing, so any buffered actions are still
+      // valid — replay them. If another client played while we were away,
+      // the state advanced and the stale buffer is discarded instead.
+      const replay = decideBufferedActionsToReplay(
+        bufferedActionsRef.current,
+        receivedJson,
+        lastGameStateJsonRef.current,
+      );
+      bufferedActionsRef.current = [];
+      for (const action of replay) {
+        ws.current?.send(JSON.stringify(action));
+      }
+      lastGameStateJsonRef.current = receivedJson;
+      setGameState(payload);
+    };
+    socket.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg && msg.type === 'State') {
+        onState(msg.payload);
+        return;
+      }
+      setGameState(msg);
+    };
+    socket.onclose = () => {
+      if (intentionalCloseRef.current) return;
+      // The server stopped itself (idle) or restarted. Resume invisibly:
+      // retry with backoff; on success the server sends State and we continue.
+      reconnectingRef.current = true;
+      setReconnecting(true);
+      backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
+      scheduleReconnect();
+    };
+  }, [gameId]);
+
+  const scheduleReconnect = () => {
+    if (intentionalCloseRef.current) return;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      connectWebSocket();
+    }, backoffRef.current);
+  };
 
   useEffect(() => {
     if (gameId) {
       gameConnectedRef.current = false;
       intentionalCloseRef.current = false;
-      shuttingDownRef.current = false;
-      const socket = new WebSocket(`${WS_BASE}/api/ws/${gameId}`);
-      ws.current = socket;
-      socket.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg && msg.type === 'Shutdown') {
-          shuttingDownRef.current = true;
-          persistNotice(msg.payload?.reason ?? 'The server went to sleep. Start a new game to play again.');
-          socket.close();
-          exitToMenu();
-          return;
-        }
-        if (msg && msg.type === 'State') {
-          gameConnectedRef.current = true;
-          setGameState(msg.payload);
-          return;
-        }
-        setGameState(msg);
-      };
-      socket.onclose = () => {
-        if (!intentionalCloseRef.current && !shuttingDownRef.current) {
-          persistNotice('Connection lost. The server is asleep or restarting. Start a new game to play again.');
-          exitToMenu();
-        }
-      };
-      return () => {
-        intentionalCloseRef.current = true;
-        socket.close();
-        if (ws.current === socket) ws.current = null;
-      };
+      bufferedActionsRef.current = [];
+      backoffRef.current = 500;
+      lastGameStateJsonRef.current = null;
+      connectWebSocket();
     }
-  }, [gameId]);
+    return () => {
+      intentionalCloseRef.current = true;
+      reconnectingRef.current = false;
+      setReconnecting(false);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (ws.current) {
+        ws.current.close();
+        ws.current = null;
+      }
+    };
+  }, [gameId, connectWebSocket]);
 
   useEffect(() => {
     if (!gameId) return;
     const interval = setInterval(() => {
-      if (shuttingDownRef.current) return;
       if (ws.current?.readyState === WebSocket.OPEN && gameConnectedRef.current) {
         ws.current.send(JSON.stringify({ type: 'Ping' }));
       }
@@ -251,8 +335,6 @@ export const useGameLogic = () => {
     return 0;
   }, [localGameState]);
 
-  const isMyTurn = localGameState?.current_player_index === myPlayerId;
-  const isSolo = localGameState?.players.length === 1;
   const discardRemaining = Math.max(0, damageNeeded - currentDiscardValue);
 
   const isImmuneWarning = useMemo(() => {
@@ -263,11 +345,11 @@ export const useGameLogic = () => {
   }, [selectedIndices, localGameState, myPlayerId]);
 
   const createGame = async (numPlayers: number) => {
-    dismissNotice();
+    const playerName = localStorage.getItem('kingkiller_player_name') || '';
     const res = await fetch(`${API_BASE}/api/game`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ num_players: numPlayers }),
+      body: JSON.stringify({ num_players: numPlayers, player_name: playerName || undefined }),
     });
     const data = await res.json();
     setGameId(data.id); setGameState(data.state); setMyPlayerId(0);
@@ -294,13 +376,44 @@ export const useGameLogic = () => {
       const params = new URLSearchParams(new URL(cleanId).search);
       id = params.get('game')?.toUpperCase() ?? '';
     }
-    const res = await fetch(`${API_BASE}/api/game/${id}`);
-    if (res.ok) {
-      dismissNotice();
-      setGameId(id);
-      setUrlGameId(id);
-    } else {
-      alert("Game not found");
+    if (!id) return;
+    if (joiningRef.current.has(id)) return; // already claiming a seat for this game
+    joiningRef.current.add(id);
+    try {
+      const res = await fetch(`${API_BASE}/api/game/${id}`);
+      if (!res.ok) {
+        alert("Game not found");
+        return;
+      }
+
+      // A seat from an earlier session (resume case) skips the join call.
+      const savedSeat = localStorage.getItem(`seat_${id}`);
+      if (savedSeat !== null) {
+        setGameId(id);
+        setMyPlayerId(parseInt(savedSeat));
+        setUrlGameId(id);
+        return;
+      }
+
+      const playerName = localStorage.getItem('kingkiller_player_name') || '';
+      const joinRes = await fetch(`${API_BASE}/api/game/${id}/join`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: playerName || undefined }),
+      });
+      if (joinRes.ok) {
+        const data = await joinRes.json();
+        setGameId(id);
+        setMyPlayerId(data.seat_index);
+        localStorage.setItem(`seat_${id}`, data.seat_index.toString());
+        setUrlGameId(id);
+      } else if (joinRes.status === 403) {
+        alert("That game is full — no seats left.");
+      } else {
+        alert("Could not join the game. Please try again.");
+      }
+    } finally {
+      joiningRef.current.delete(id);
     }
   };
 
@@ -312,12 +425,32 @@ export const useGameLogic = () => {
   }, []);
 
   const sendAction = (action: GameAction) => {
-    ws.current?.send(JSON.stringify(action));
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(action));
+    } else {
+      // Socket is down (server asleep/restarting). Queue until the reconnect
+      // arrives; the onState handler replays the buffer if nothing moved.
+      bufferedActionsRef.current.push(action);
+    }
     setSelectedIndices([]);
+  };
+
+  // Persist the player's name locally AND broadcast it to the table, so
+  // everyone (including a player who only joined a game) can pick a name.
+  const renamePlayer = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    localStorage.setItem('kingkiller_player_name', trimmed);
+    if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
+  };
+
+  const chooseNextPlayer = (index: number) => {
+    sendAction({ type: 'ChooseNextPlayer', payload: { index } });
   };
 
   const toggleCard = (originalIndex: number) => {
     if (!localGameState || myPlayerId === null) return;
+    if (localGameState.phase === 'AwaitingNextPlayer') return;
     const card = localGameState.players[myPlayerId].hand[originalIndex];
     if (!card) return;
     if (selectedIndices.includes(originalIndex)) {
@@ -336,17 +469,31 @@ export const useGameLogic = () => {
   };
 
   const exitToMenu = () => {
+    intentionalCloseRef.current = true;
+    reconnectingRef.current = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    bufferedActionsRef.current = [];
+    backoffRef.current = 500;
+    if (ws.current) {
+      ws.current.close();
+      ws.current = null;
+    }
     clearUrlGameId();
     setGameId(null); setGameState(null); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
     setDefeatFlight(null);
+    setReconnecting(false);
   };
 
   const restartTable = () => { sendAction({ type: 'Reset' }); setShowGameOver(false); };
 
   return {
     gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-    defeatFlight, finishDefeatFlight, disconnectNotice, dismissNotice,
+    defeatFlight, finishDefeatFlight, reconnecting,
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
-    createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
+    isChoosingNextPlayer,
+    createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, renamePlayer
   };
 };

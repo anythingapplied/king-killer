@@ -27,13 +27,15 @@ const HandArea: React.FC<HandAreaProps> = ({
 }) => {
     const currentSelection = selectedIndices.map(idx => actualHand[idx]).filter(Boolean) as CardType[];
     const isDiscarding = damageNeeded > 0;
+    const isChoosing = phase === 'AwaitingNextPlayer';
+    const canInteract = isMyTurn && !isChoosing;
 
     return (
         <div data-testid="hand-area" className="flex flex-col items-center relative px-4 pb-2">
             {/* Status Indicator Above Hand */}
             <div className="flex items-center justify-center h-10 mb-2">
-                <div className={`px-10 py-1.5 rounded-full font-black border shadow-xl text-[10px] transition-all duration-300 ${isDiscarding ? 'bg-red-600 border-red-400 text-white animate-pulse' : isMyTurn ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500 opacity-60'}`}>
-                    {isDiscarding ? (isMyTurn ? `DISCARD ${discardRemaining} REMAINING` : `P${currentPlayerIndex + 1} DISCARDING...`) : (isMyTurn ? "YOUR TURN" : `WAITING FOR P${currentPlayerIndex + 1}...`)}
+                <div className={`px-10 py-1.5 rounded-full font-black border shadow-xl text-[10px] transition-all duration-300 ${isChoosing ? 'bg-purple-600 border-purple-400 text-white' : isDiscarding ? 'bg-red-600 border-red-400 text-white animate-pulse' : isMyTurn ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500 opacity-60'}`}>
+                    {isChoosing ? (isMyTurn ? "CHOOSE NEXT PLAYER" : "JESTER CHOOSING...") : isDiscarding ? (isMyTurn ? `DISCARD ${discardRemaining} REMAINING` : `P${currentPlayerIndex + 1} DISCARDING...`) : (isMyTurn ? "YOUR TURN" : `WAITING FOR P${currentPlayerIndex + 1}...`)}
                 </div>
             </div>
 
@@ -46,7 +48,7 @@ const HandArea: React.FC<HandAreaProps> = ({
                             const isImmune = enemySuit === item.card.suit && !isJesterActive;
                             const showWarning = isImmune && isSel && !isDiscarding;
                             
-                            const shouldGrey = isMyTurn && !isSel && (
+                            const shouldGrey = canInteract && !isSel && (
                                 !isSelectionValid(item.card, currentSelection, phase) || 
                                 (damageNeeded > 0 && currentDiscardValue >= damageNeeded)
                             );
@@ -64,8 +66,8 @@ const HandArea: React.FC<HandAreaProps> = ({
                                     <Card 
                                         card={item.card} 
                                         selected={isSel} 
-                                        onClick={isMyTurn ? () => onCardClick(item.originalIndex) : undefined} 
-                                        className={`w-[11vw] max-w-[95px] transition-all duration-300 ${!isMyTurn ? 'opacity-40 grayscale-[0.4] pointer-events-none' : ''} ${shouldGrey ? 'opacity-10 grayscale brightness-[0.2]' : ''}`} 
+                                        onClick={canInteract ? () => onCardClick(item.originalIndex) : undefined} 
+                                        className={`w-[11vw] max-w-[95px] transition-all duration-300 ${!canInteract ? 'opacity-40 grayscale-[0.4] pointer-events-none' : ''} ${shouldGrey ? 'opacity-10 grayscale brightness-[0.2]' : ''}`} 
                                     />
                                     {showWarning && (
                                         <motion.div 

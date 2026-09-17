@@ -34,11 +34,13 @@ export interface Enemy {
 
 export interface Player {
     id: number;
+    name: string;
     hand: Card[];
 }
 
 export type TurnPhase = 
     | 'AwaitingPlay'
+    | 'AwaitingNextPlayer'
     | { AwaitingDiscard: { damage_to_take: number } };
 
 export type GameStatus = 
@@ -50,6 +52,9 @@ export type GameStatus =
 export type EnemyFate = 'Tavern' | 'Discard';
 
 export interface GameState {
+    version: number;
+    seed: number;
+    rng: { state: number };
     players: Player[];
     current_player_index: number;
     tavern_deck: Card[];
@@ -71,5 +76,7 @@ export type GameAction =
     | { type: 'PlayCards', payload: { indices: number[] } }
     | { type: 'Yield' }
     | { type: 'DiscardCards', payload: { indices: number[] } }
+    | { type: 'ChooseNextPlayer', payload: { index: number } }
     | { type: 'UseSoloJester' }
-    | { type: 'Reset' };
+    | { type: 'Reset' }
+    | { type: 'SetName', payload: { seat: number, name: string } };

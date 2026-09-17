@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGameLogic, type DefeatFlight } from './hooks/useGameLogic';
 import HUD from './components/HUD';
 import Arena from './components/Arena';
@@ -32,10 +32,16 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, disconnectNotice, dismissNotice,
+        defeatFlight, finishDefeatFlight, reconnecting,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
-        createGame, joinGame, sendAction, toggleCard, copyId, exitToMenu, restartTable
+        createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, renamePlayer
     } = useGameLogic();
+
+    const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
+
+    useEffect(() => {
+        if (playerName) localStorage.setItem('kingkiller_player_name', playerName);
+    }, [playerName]);
 
     if (!gameId) {
         return (
@@ -47,17 +53,16 @@ const App: React.FC = () => {
                 >
                     KING KILLER
                 </motion.h1>
-                {disconnectNotice && (
-                    <div className="mb-6 w-full max-w-md bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 flex items-start gap-3">
-                        <div className="flex-1 text-left">
-                            <div className="text-amber-400 font-black uppercase tracking-widest text-xs mb-1">Connection Lost</div>
-                            <div className="text-slate-200 text-sm leading-relaxed">{disconnectNotice}</div>
-                        </div>
-                        <button onClick={dismissNotice} className="shrink-0 text-slate-400 hover:text-white text-xl font-black leading-none px-2" aria-label="Dismiss">×</button>
-                    </div>
-                )}
                 <div className="bg-slate-800 p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700">
                     <h2 className="text-xl font-bold mb-6 text-slate-300">New Game</h2>
+                    <input 
+                        type="text" 
+                        placeholder="YOUR NAME" 
+                        value={playerName}
+                        onChange={(e) => setPlayerName(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-3 px-4 text-center font-bold focus:ring-2 focus:ring-blue-500 outline-none text-sm mb-6" 
+                        maxLength={20}
+                    />
                     <div className="grid grid-cols-2 gap-4 mb-10">
                         {[1, 2, 3, 4].map(n => (
                             <button key={n} onClick={() => createGame(n)} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 transition-all text-lg">
@@ -100,9 +105,11 @@ const App: React.FC = () => {
                 gameState={localGameState}
                 copySuccess={copySuccess}
                 activeEffects={activeEffects}
+                reconnecting={reconnecting}
                 onMenuClick={exitToMenu}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
+                onRename={renamePlayer}
             />
 
             {/* Arena Row */}
@@ -139,8 +146,12 @@ const App: React.FC = () => {
                     currentDiscardValue={currentDiscardValue}
                     isSolo={isSolo}
                     isImmuneWarning={isImmuneWarning}
+                    phase={localGameState.phase}
+                    players={localGameState.players}
+                    myPlayerId={myPlayerId}
                     onAttackClick={() => sendAction({ type: damageNeeded > 0 ? 'DiscardCards' : 'PlayCards', payload: { indices: selectedIndices } })}
                     onYieldClick={() => sendAction({ type: 'Yield' })}
+                    onChooseNextPlayer={chooseNextPlayer}
                 />
             </div>
 
