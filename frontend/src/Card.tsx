@@ -42,7 +42,7 @@ const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, c
     }
 
     const fileName = isBack ? 'RED_BACK.svg' : (card ? getCardFileName(card) : 'RED_BACK.svg');
-    const src = `/cards/${fileName}`;
+    const src = `/cards/${fileName}?v=2`;
 
     return (
         <motion.div 
