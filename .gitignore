@@ -31,3 +31,6 @@ devenv.lock
 !.vscode/extensions.json
 .idea
 .DS_Store
+# Runtime SQLite artifacts (DATA_DIR default is ./data)
+/data/
+frontend/data/
