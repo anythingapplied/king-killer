@@ -251,14 +251,29 @@ async fn record_history(db: &SqlitePool, game_id: &str, action_type: &str, actio
     .await;
 }
 
+/// Loads every persisted room at startup.
+///
+/// The query is allowed to panic. Failing it means the database is unreadable
+/// as a whole - and starting anyway is worse than not starting, because the
+/// server would come up believing it has no rooms and `persist_room`'s
+/// `ON CONFLICT DO UPDATE` would then overwrite rooms that were merely
+/// unreadable. A transient read failure would become permanent data loss.
+/// Every other startup step (data dir, pool, migrations) already `expect`s.
+///
+/// An individual row is different: one unparseable room must not stop the
+/// server, so it is skipped - but loudly. The silent version hid a nasty
+/// failure mode: adding a required (non-`serde(default)`) field to `Room`
+/// makes every stored room fail this parse, fall through the legacy branch,
+/// and vanish on the next boot with nothing in the logs.
 async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, state_json, occupied_seats FROM games")
             .fetch_all(db)
             .await
-            .unwrap_or_default();
+            .expect("Failed to load rooms from the database");
 
     let mut rooms = HashMap::new();
+    let mut skipped = 0usize;
     for (id, state_json, seats_json) in rows {
         if let Ok(room) = serde_json::from_str::<Room>(&state_json) {
             rooms.insert(id, room);
@@ -294,7 +309,21 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     chat: Vec::new(),
                 },
             );
+        } else {
+            // Neither a Room nor a legacy GameState. Keep serving the rooms
+            // that did load, but never drop one without saying so - the row
+            // itself is left untouched in the database for inspection.
+            skipped += 1;
+            tracing::error!(
+                room_id = %id,
+                "could not deserialize stored room; skipping it. The row is left \
+                 in the database. If this fires for every room, a required field \
+                 was probably added to Room without #[serde(default)]."
+            );
         }
+    }
+    if skipped > 0 {
+        tracing::error!("skipped {} unreadable room(s) at startup", skipped);
     }
     rooms
 }
@@ -756,6 +785,43 @@ mod tests {
         assert_eq!(room.members.len(), 2);
         assert_eq!(room.members[0].name, "Host");
         assert_eq!(room.members[1].seat, 2);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_row_is_skipped_without_taking_the_others_with_it() {
+        let pool = test_pool().await;
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // One row that is neither a Room nor a legacy GameState.
+        let _ = sqlx::query("INSERT INTO games (id, state_json, occupied_seats) VALUES (?1, ?2, ?3)")
+            .bind("BROKEN")
+            .bind("{\"not\":\"a room\"}")
+            .bind("[]")
+            .execute(&pool)
+            .await;
+
+        // ...alongside a perfectly good one.
+        let good = Room {
+            id: "GOOD01".to_string(),
+            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true }],
+            game: GameState::new(2),
+            chat: Vec::new(),
+        };
+        persist_room(&pool, &good).await;
+
+        let loaded = load_rooms(&pool).await;
+        assert!(loaded.contains_key("GOOD01"), "a bad row must not block good ones");
+        assert!(!loaded.contains_key("BROKEN"));
+        assert_eq!(loaded.len(), 1);
+
+        // The row is skipped in memory, not deleted: it stays available for
+        // inspection rather than being quietly destroyed on startup.
+        let (still_there,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM games WHERE id = 'BROKEN'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(still_there, 1);
     }
 
     #[tokio::test]
