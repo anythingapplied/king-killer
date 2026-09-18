@@ -569,6 +569,90 @@ struct WsParams {
     seat: Option<usize>,
 }
 
+/// Whether a frame should be applied to the room at all.
+///
+/// Identity comes from the socket's authenticated `seat`, never from anything
+/// in the message body — a client may not nominate who it is acting as.
+/// Everything this rejects is dropped before being timestamped, persisted or
+/// broadcast, so a refused frame leaves no trace at all.
+///
+/// Pure so it can be tested without standing up a WebSocket.
+fn should_apply(action: &GameAction, seat: Option<usize>, room: Option<&Room>) -> bool {
+    match action {
+        // A keepalive is not an action: no state change, no history, no
+        // broadcast. Rejecting it here keeps the caller to a single check.
+        GameAction::Ping => false,
+        // Only the room's host may start a new deal - otherwise a spectator or
+        // any later-joining player could reset the table mid-game.
+        GameAction::NewGame { .. } | GameAction::Reset => seat.is_some_and(|s| {
+            room.is_some_and(|r| r.members.iter().any(|m| m.seat == s && m.host))
+        }),
+        // You may only rename the seat you connected as.
+        GameAction::SetName { seat: requested, .. } => seat == Some(*requested),
+        _ => true,
+    }
+}
+
+/// Label stored in `game_history.action_type`.
+fn action_type(action: &GameAction) -> &'static str {
+    match action {
+        GameAction::Ping => "ping",
+        GameAction::PlayCards { .. } => "play_cards",
+        GameAction::Yield => "yield",
+        GameAction::DiscardCards { .. } => "discard_cards",
+        GameAction::ChooseNextPlayer { .. } => "choose_next_player",
+        GameAction::UseSoloJester => "use_solo_jester",
+        GameAction::Reset => "reset",
+        GameAction::NewGame { .. } => "new_game",
+        GameAction::SetName { .. } => "set_name",
+        GameAction::SendChat { .. } => "send_chat",
+    }
+}
+
+/// Applies an already-authorized action to the room.
+///
+/// `seat` is the socket's authenticated seat, used for actions that act *as*
+/// the caller. The `Result` is currently discarded by the caller, but it is
+/// returned rather than swallowed here so the planned `ServerMessage::Error`
+/// has something to report.
+fn apply_action(room: &mut Room, action: &GameAction, seat: Option<usize>) -> Result<(), String> {
+    match action {
+        GameAction::PlayCards { indices } => room.game.play_cards(indices.clone()),
+        GameAction::Yield => room.game.yield_turn(),
+        GameAction::DiscardCards { indices } => room.game.discard_cards(indices.clone()),
+        GameAction::ChooseNextPlayer { index } => room.game.choose_next_player(*index),
+        GameAction::UseSoloJester => room.game.use_solo_jester(),
+        GameAction::Reset => {
+            deal_new_game(room, room.game.players.len() as u32);
+            Ok(())
+        }
+        GameAction::NewGame { num_players } => {
+            deal_new_game(room, *num_players);
+            Ok(())
+        }
+        GameAction::SetName { seat, name } => {
+            if let Some(player) = room.game.players.get_mut(*seat) {
+                player.name = name.clone();
+            }
+            if let Some(member) = room.members.iter_mut().find(|m| m.seat == *seat) {
+                member.name = name.clone();
+            }
+            Ok(())
+        }
+        GameAction::SendChat { text } => {
+            // Sender comes from the socket, never the body. A connection with
+            // no seat cannot post.
+            if let Some(sender_seat) = seat {
+                room.push_chat(sender_seat, text);
+            }
+            Ok(())
+        }
+        // Rejected by should_apply before reaching here; the arm keeps the
+        // match total so adding a variant can't silently break the build.
+        GameAction::Ping => Ok(()),
+    }
+}
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
@@ -617,96 +701,22 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(action) = serde_json::from_str::<GameAction>(&text) {
-                // A keepalive carries no state change: no history row, no
-                // persist, no broadcast. Without this arm the frame failed to
-                // parse and the client's keepalive did nothing at all.
-                if matches!(action, GameAction::Ping) {
+                // Authorization and dispatch both live in pure functions above,
+                // so the handler itself is only frames, locks and I/O.
+                let authorized = {
+                    let rooms = state_recv.rooms.read().unwrap();
+                    should_apply(&action, seat, rooms.get(&id))
+                };
+                if !authorized {
                     continue;
                 }
 
-                // Only the room's host may start a new deal - anyone else
-                // (a spectator, or any later-joining player) sending
-                // NewGame/Reset is dropped here, before it is timestamped,
-                // persisted, or broadcast, exactly like an unrecognized action.
-                if matches!(action, GameAction::NewGame { .. } | GameAction::Reset) {
-                    let is_host = seat.is_some_and(|s| {
-                        state_recv.rooms.read().unwrap().get(&id)
-                            .is_some_and(|room| room.members.iter().any(|m| m.seat == s && m.host))
-                    });
-                    if !is_host {
-                        continue;
-                    }
-                }
-
-                // SetName used to trust whatever seat the client put in the
-                // message body, so any connection could rename anyone else at
-                // the table - a client-controlled field, not the seat this
-                // socket actually authenticated as. Only a minor issue on its
-                // own, but a name is exactly what a future chat feature would
-                // attribute messages by, so this is fixed as the pattern chat
-                // will reuse: a request may only act as the seat it opened the
-                // socket as. A mismatch is dropped, same shape as the host gate
-                // above - before it is timestamped, persisted, or broadcast.
-                if let GameAction::SetName { seat: requested_seat, .. } = &action {
-                    if seat != Some(*requested_seat) {
-                        continue;
-                    }
-                }
-
-                let action_type = match &action {
-                    GameAction::Ping => "ping",
-                    GameAction::PlayCards { .. } => "play_cards",
-                    GameAction::Yield => "yield",
-                    GameAction::DiscardCards { .. } => "discard_cards",
-                    GameAction::ChooseNextPlayer { .. } => "choose_next_player",
-                    GameAction::UseSoloJester => "use_solo_jester",
-                    GameAction::Reset => "reset",
-                    GameAction::NewGame { .. } => "new_game",
-                    GameAction::SetName { .. } => "set_name",
-                    GameAction::SendChat { .. } => "send_chat",
-                };
+                let action_type = action_type(&action);
 
                 let room = {
                     let mut rooms = state_recv.rooms.write().unwrap();
                     rooms.get_mut(&id).map(|room| {
-                        let _ = match &action {
-                            GameAction::PlayCards { indices } => room.game.play_cards(indices.clone()),
-                            GameAction::Yield => room.game.yield_turn(),
-                            GameAction::DiscardCards { indices } => room.game.discard_cards(indices.clone()),
-                            GameAction::ChooseNextPlayer { index } => room.game.choose_next_player(*index),
-                            GameAction::UseSoloJester => room.game.use_solo_jester(),
-                            GameAction::Reset => {
-                                deal_new_game(room, room.game.players.len() as u32);
-                                Ok(())
-                            }
-                            GameAction::NewGame { num_players } => {
-                                deal_new_game(room, *num_players);
-                                Ok(())
-                            }
-                            GameAction::SetName { seat, name } => {
-                                if let Some(player) = room.game.players.get_mut(*seat) {
-                                    player.name = name.clone();
-                                }
-                                if let Some(member) = room.members.iter_mut().find(|m| m.seat == *seat) {
-                                    member.name = name.clone();
-                                }
-                                Ok(())
-                            }
-                            GameAction::SendChat { text } => {
-                                // Sender comes from the socket, never the body.
-                                // A connection with no seat cannot post.
-                                if let Some(sender_seat) = seat {
-                                    room.push_chat(sender_seat, text);
-                                }
-                                Ok(())
-                            }
-                            // Short-circuited above, before this match is
-                            // reached. The arm exists so adding the Ping
-                            // variant doesn't leave the match non-exhaustive -
-                            // which it did, and this crate has not compiled
-                            // since.
-                            GameAction::Ping => Ok(()),
-                        };
+                        let _ = apply_action(room, &action, seat);
                         room.clone()
                     })
                 };
@@ -973,45 +983,130 @@ mod tests {
         assert_eq!(room.members.iter().filter(|m| m.host).count(), 1, "still exactly one host");
     }
 
-    #[tokio::test]
-    async fn non_host_new_game_action_is_silently_ignored() {
-        // Exercises the same is_host predicate the WebSocket dispatch gate
-        // uses, at the Room level, so the rule is covered without needing to
-        // drive an actual socket in a unit test.
-        let room = Room {
-            id: "GATE".to_string(),
+
+
+    fn host_room() -> Room {
+        Room {
+            id: "SOCK".to_string(),
             members: vec![
                 Member { seat: 0, name: "Alice".to_string(), host: true },
                 Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 2, name: "Wanda".to_string(), host: false },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
-        };
+        }
+    }
 
-        let is_host = |seat: Option<usize>| {
-            seat.is_some_and(|s| room.members.iter().any(|m| m.seat == s && m.host))
-        };
+    // ---- should_apply: the socket's authorization decision ----
 
-        assert!(is_host(Some(0)), "the host may start a new deal");
-        assert!(!is_host(Some(1)), "a non-host player may not");
-        assert!(!is_host(Some(99)), "an unknown seat may not");
-        assert!(!is_host(None), "a connection with no seat may not");
+    #[test]
+    fn keepalive_is_never_applied() {
+        // Not an action: no state change, no history row, no broadcast.
+        let room = host_room();
+        assert!(!should_apply(&GameAction::Ping, Some(0), Some(&room)));
     }
 
     #[test]
-    fn set_name_only_authorized_for_the_requesting_seat() {
-        // Mirrors the dispatch gate's own predicate: `seat != Some(requested)`
-        // is rejected, and only an exact match on the socket's own
-        // authenticated seat passes.
-        let authorized = |connected_as: Option<usize>, requested_seat: usize| {
-            connected_as == Some(requested_seat)
-        };
-
-        assert!(authorized(Some(0), 0), "a seat may rename itself");
-        assert!(!authorized(Some(0), 1), "seat 0 may not rename seat 1");
-        assert!(!authorized(None, 0), "a connection with no seat may rename no one");
-        assert!(!authorized(Some(1), 0), "seat 1 may not rename seat 0");
+    fn only_the_host_may_start_a_new_deal() {
+        let room = host_room();
+        for action in [GameAction::Reset, GameAction::NewGame { num_players: 3 }] {
+            assert!(should_apply(&action, Some(0), Some(&room)), "host may");
+            assert!(!should_apply(&action, Some(1), Some(&room)), "a seated non-host may not");
+            assert!(!should_apply(&action, Some(2), Some(&room)), "a spectator may not");
+            assert!(!should_apply(&action, None, Some(&room)), "a seatless connection may not");
+            assert!(!should_apply(&action, Some(0), None), "not for an unknown room");
+        }
     }
+
+    #[test]
+    fn set_name_may_only_target_the_connected_seat() {
+        let room = host_room();
+        let rename = |seat: usize| GameAction::SetName { seat, name: "X".to_string() };
+        assert!(should_apply(&rename(1), Some(1), Some(&room)));
+        assert!(!should_apply(&rename(0), Some(1), Some(&room)), "cannot rename another seat");
+        assert!(!should_apply(&rename(0), None, Some(&room)), "a seatless connection renames nobody");
+    }
+
+    #[test]
+    fn ordinary_turn_actions_are_not_gated_here() {
+        // They are constrained by the game's own current_player_index instead,
+        // so this layer lets them through - including from a spectator.
+        let room = host_room();
+        assert!(should_apply(&GameAction::Yield, Some(2), Some(&room)));
+        assert!(should_apply(&GameAction::PlayCards { indices: vec![0] }, Some(2), Some(&room)));
+        assert!(should_apply(&GameAction::SendChat { text: "hi".into() }, Some(2), Some(&room)));
+    }
+
+    // ---- action_type: the label written to game_history ----
+
+    #[test]
+    fn every_action_has_a_stable_history_label() {
+        let cases = [
+            (GameAction::Ping, "ping"),
+            (GameAction::PlayCards { indices: vec![] }, "play_cards"),
+            (GameAction::Yield, "yield"),
+            (GameAction::DiscardCards { indices: vec![] }, "discard_cards"),
+            (GameAction::ChooseNextPlayer { index: 0 }, "choose_next_player"),
+            (GameAction::UseSoloJester, "use_solo_jester"),
+            (GameAction::Reset, "reset"),
+            (GameAction::NewGame { num_players: 2 }, "new_game"),
+            (GameAction::SetName { seat: 0, name: String::new() }, "set_name"),
+            (GameAction::SendChat { text: String::new() }, "send_chat"),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(action_type(&action), expected);
+        }
+    }
+
+    // ---- apply_action: dispatch ----
+
+    #[test]
+    fn set_name_updates_both_the_player_and_the_member() {
+        // Two records carry a name; updating only one leaves the roster and the
+        // board disagreeing about who you are.
+        let mut room = host_room();
+        apply_action(&mut room, &GameAction::SetName { seat: 1, name: "Robert".into() }, Some(1)).unwrap();
+        assert_eq!(room.members.iter().find(|m| m.seat == 1).unwrap().name, "Robert");
+        assert_eq!(room.game.players[1].name, "Robert");
+    }
+
+    #[test]
+    fn chat_is_attributed_to_the_socket_seat_not_the_payload() {
+        let mut room = host_room();
+        apply_action(&mut room, &GameAction::SendChat { text: "hello".into() }, Some(1)).unwrap();
+        assert_eq!(room.chat.len(), 1);
+        assert_eq!(room.chat[0].seat, 1, "the sender is the connection, not anything sent");
+        assert_eq!(room.chat[0].name, "Bob");
+    }
+
+    #[test]
+    fn a_seatless_connection_cannot_chat() {
+        let mut room = host_room();
+        apply_action(&mut room, &GameAction::SendChat { text: "hello".into() }, None).unwrap();
+        assert!(room.chat.is_empty());
+    }
+
+    #[test]
+    fn new_game_redeals_at_the_requested_size_and_keeps_the_host() {
+        let mut room = host_room();
+        apply_action(&mut room, &GameAction::NewGame { num_players: 3 }, Some(0)).unwrap();
+        assert_eq!(room.game.players.len(), 3);
+        assert_eq!(room.members.iter().filter(|m| m.host).count(), 1);
+        assert!(room.members.iter().find(|m| m.seat == 0).unwrap().host);
+    }
+
+    #[test]
+    fn an_illegal_play_reports_an_error_and_leaves_the_game_alone() {
+        // The caller discards this Result today, but it is returned rather than
+        // swallowed so the planned ServerMessage::Error has something to send.
+        let mut room = host_room();
+        let before = room.game.players[room.game.current_player_index].hand.clone();
+        let err = apply_action(&mut room, &GameAction::PlayCards { indices: vec![99] }, Some(0));
+        assert!(err.is_err(), "an out-of-range index is rejected");
+        assert_eq!(room.game.players[room.game.current_player_index].hand, before);
+    }
+
 
     fn chat_room() -> Room {
         Room {
