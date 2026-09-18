@@ -1,3 +1,13 @@
+// MIRRORS king-killer-core/src/lib.rs. These functions re-implement the server's
+// rules so the UI can grey out illegal cards before anything is sent, but the
+// server is the only authority — and it rejects bad actions *silently*, so a
+// divergence here shows up as a click that does nothing rather than an error.
+//
+// Change these and `is_valid_combo` / `attack_value` / `calculate_attack_value`
+// in lib.rs together. The pairs that must agree:
+//   isSelectionValid  <-> GameState::is_valid_combo
+//   getAttackValue    <-> Card::attack_value
+//   calculateBlowDamage <-> GameState::calculate_attack_value + clubs doubling
 import type { Card as CardType, Rank as RankType, Suit as SuitType, TurnPhase } from './types';
 
 export const suitOrder: SuitType[] = ['Clubs', 'Hearts', 'Spades', 'Diamonds'];

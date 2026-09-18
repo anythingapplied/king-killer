@@ -1,3 +1,34 @@
+//! King Killer game server: HTTP + WebSocket transport, SQLite persistence.
+//!
+//! # Rooms vs games
+//!
+//! A [`Room`] outlives any single deal. Members hold a `seat` and keep it
+//! across re-deals, so `NewGame` can change the player count without anyone
+//! losing their identity. Seats below the current player count are players;
+//! seats at or above it are spectators.
+//!
+//! # Authority
+//!
+//! The socket authenticates a seat via `?seat=N`, and that is the *only*
+//! source of caller identity — never a seat in a message body. It gates two
+//! things: host-only actions (`NewGame`/`Reset`) and acting as yourself
+//! (`SetName`, `SendChat`). Everything else targets the game's own
+//! `current_player_index`, so a wrong seat cannot be used to play out of turn.
+//!
+//! Rejected actions are dropped *before* being timestamped, persisted, or
+//! broadcast, and the client is not told. That is deliberate — the UI hides
+//! or disables what you may not do — but it means a client/server rule
+//! divergence looks like an unresponsive button, not an error.
+//!
+//! # Lifecycle
+//!
+//! The whole [`Room`] is serialized into `state_json` on every action, so new
+//! room-level fields need `#[serde(default)]` but no migration. The process
+//! exits after [`idle_timeout`] with no activity (scale-to-zero); clients
+//! reconnect transparently and replay any buffered actions, so a shutdown
+//! mid-game is invisible. Chat and game state therefore have to survive in the
+//! database, not in memory.
+
 use axum::{
     extract::Query,
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},

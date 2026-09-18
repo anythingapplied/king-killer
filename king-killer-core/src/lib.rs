@@ -1,3 +1,24 @@
+//! King Killer rules engine.
+//!
+//! Pure game logic with no I/O: the server owns transport and persistence, this
+//! crate owns what is legal and what it does. Every state transition goes
+//! through a `&mut GameState` method returning `Result<(), String>`; a rejected
+//! action leaves the state exactly as it was.
+//!
+//! Determinism is the load-bearing property. A game is fully reproducible from
+//! `(seed, RULES_VERSION, ordered actions)`, which is what the server's history
+//! table stores. Two things follow from that:
+//!
+//! * All randomness goes through [`GameRng`]. Never reach for a thread RNG.
+//! * Any change to rules *or* to the RNG must bump [`RULES_VERSION`], or stored
+//!   histories will silently replay into a different game.
+//!
+//! Some rules here are mirrored in `frontend/src/gameLogic.ts` so the UI can
+//! grey out illegal plays. The server is authoritative and rejects bad actions
+//! silently, so a divergence surfaces as a click that does nothing — keep
+//! `is_valid_combo`, `Card::attack_value` and `calculate_attack_value` in step
+//! with their TypeScript counterparts.
+
 use serde::{Deserialize, Serialize};
 
 /// Bump whenever game rules OR the deterministic RNG algorithm change.
