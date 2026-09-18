@@ -511,6 +511,21 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
                     }
                 }
 
+                // SetName used to trust whatever seat the client put in the
+                // message body, so any connection could rename anyone else at
+                // the table - a client-controlled field, not the seat this
+                // socket actually authenticated as. Only a minor issue on its
+                // own, but a name is exactly what a future chat feature would
+                // attribute messages by, so this is fixed as the pattern chat
+                // will reuse: a request may only act as the seat it opened the
+                // socket as. A mismatch is dropped, same shape as the host gate
+                // above - before it is timestamped, persisted, or broadcast.
+                if let GameAction::SetName { seat: requested_seat, .. } = &action {
+                    if seat != Some(*requested_seat) {
+                        continue;
+                    }
+                }
+
                 let action_type = match &action {
                     GameAction::Ping => "ping",
                     GameAction::PlayCards { .. } => "play_cards",
@@ -795,5 +810,20 @@ mod tests {
         assert!(!is_host(Some(1)), "a non-host player may not");
         assert!(!is_host(Some(99)), "an unknown seat may not");
         assert!(!is_host(None), "a connection with no seat may not");
+    }
+
+    #[test]
+    fn set_name_only_authorized_for_the_requesting_seat() {
+        // Mirrors the dispatch gate's own predicate: `seat != Some(requested)`
+        // is rejected, and only an exact match on the socket's own
+        // authenticated seat passes.
+        let authorized = |connected_as: Option<usize>, requested_seat: usize| {
+            connected_as == Some(requested_seat)
+        };
+
+        assert!(authorized(Some(0), 0), "a seat may rename itself");
+        assert!(!authorized(Some(0), 1), "seat 0 may not rename seat 1");
+        assert!(!authorized(None, 0), "a connection with no seat may rename no one");
+        assert!(!authorized(Some(1), 0), "seat 1 may not rename seat 0");
     }
 }

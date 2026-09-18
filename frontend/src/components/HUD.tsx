@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import type { GameState, CombatEffect, RoomMember } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
+import { spectatorNumber } from '../spectatorLabel';
 
 interface HUDProps {
     gameId: string;
@@ -38,13 +39,25 @@ const HUD: React.FC<HUDProps> = ({
     const me = isSpectator ? undefined : gameState.players[myPlayerId];
     const mustRefreshSolo = isSolo && !!me && me.hand.length === 0 && gameState.solo_jesters > 0;
     const isMyTurn = gameState.current_player_index === myPlayerId;
-    const watching = roster.filter(m => m.seat >= gameState.players.length);
+    // Spectator seats continue the player numbering - the first watcher in a
+    // 2-player game is seat 2 - so rendering a raw seat reads as "Spectator 3".
+    // Number them by position among the watchers instead. That also stays
+    // correct when a re-deal changes the player count and shifts who is
+    // watching, which arithmetic on seat numbers only happens to get right
+    // while seats stay contiguous.
+    const watching = roster
+        .filter(m => m.seat >= gameState.players.length)
+        .sort((a, b) => a.seat - b.seat);
+    const spectatorLabel = (seat: number) => spectatorNumber(seat, roster, gameState.players.length);
 
     const [editingName, setEditingName] = useState(false);
     const [draftName, setDraftName] = useState('');
     const nameCancelledRef = useRef(false);
 
-    const displayMyName = me?.name || roster.find(m => m.seat === myPlayerId)?.name || `${isSpectator ? 'Spectator' : 'Player'} ${myPlayerId + 1}`;
+    const fallbackMyName = isSpectator
+        ? `Spectator ${spectatorLabel(myPlayerId)}`
+        : `Player ${myPlayerId + 1}`;
+    const displayMyName = me?.name || roster.find(m => m.seat === myPlayerId)?.name || fallbackMyName;
 
     const startEditName = () => {
         setDraftName(me?.name || roster.find(m => m.seat === myPlayerId)?.name || '');
@@ -181,12 +194,12 @@ const HUD: React.FC<HUDProps> = ({
 
             {watching.length > 0 && (
                 <div data-testid="watching-row" className="flex gap-1.5 justify-center flex-wrap items-center border-t border-slate-700/30 pt-1.5 mt-1.5">
-                    <span className="text-[7px] font-black uppercase tracking-widest text-slate-500">Watching</span>
+                    <span className="t-micro font-black uppercase tracking-widest text-slate-500">Watching</span>
                     {watching.map(m => {
                         const isMe = m.seat === myPlayerId;
                         return (
-                            <span key={m.seat} className={`px-2 py-0.5 rounded-full text-[8px] font-black border ${isMe ? 'border-amber-400 bg-amber-900/40 text-amber-200' : 'bg-slate-900/40 border-slate-700 text-slate-400'}`}>
-                                {m.name || (isMe ? 'You' : `Spectator ${m.seat - gameState.players.length + 1}`)}
+                            <span key={m.seat} className={`px-2 py-0.5 rounded-full t-micro font-black border ${isMe ? 'border-amber-400 bg-amber-900/40 text-amber-200' : 'bg-slate-900/40 border-slate-700 text-slate-400'}`}>
+                                {m.name || (isMe ? 'You' : `Spectator ${spectatorLabel(m.seat)}`)}
                             </span>
                         );
                     })}

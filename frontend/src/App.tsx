@@ -231,7 +231,7 @@ const App: React.FC = () => {
                             initial={{ scale: 0.9, y: 50 }} animate={{ scale: 1, y: 0 }}
                             className="bg-slate-800/95 p-12 rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-slate-700 w-full max-w-sm relative"
                         >
-                            <button onClick={() => setShowNewGame(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">Close</button>
+                            <button onClick={() => setShowNewGame(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white t-micro font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">Close</button>
                             <h2 className="text-3xl font-black mb-2 tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-amber-300 to-amber-600">New Game</h2>
                             <p className="text-slate-400 text-xs font-bold mb-8 leading-relaxed">Deal a fresh game in this room. Everyone keeps their seats; extra members watch.</p>
                             <div className="grid grid-cols-2 gap-4">
@@ -241,7 +241,7 @@ const App: React.FC = () => {
                                     </button>
                                 ))}
                             </div>
-                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mt-8">Room ID: {gameId}</p>
+                            <p className="text-slate-500 t-micro font-black uppercase tracking-widest mt-8">Room ID: {gameId}</p>
                         </motion.div>
                     </motion.div>
                 )}
