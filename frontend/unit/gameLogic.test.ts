@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage } from '../src/gameLogic';
+import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, isSuitImmune } from '../src/gameLogic';
 import type { Card as CardType, Suit, Rank as RankType, TurnPhase } from '../src/types';
 
 const card = (suit: Suit | null, rank: RankType, id = 0): CardType => ({ suit, rank, id });
@@ -85,5 +85,26 @@ describe('isSelectionValid', () => {
         expect(isSelectionValid(n('Clubs', 4), [n('Hearts', 4)], need)).toBe(true); // 4 < 10, still allowed
         expect(isSelectionValid(n('Clubs', 8), [n('Hearts', 4)], need)).toBe(true); // 4 < 10, still allowed
         expect(isSelectionValid(n('Clubs', 6), [n('Hearts', 5), n('Spades', 5)], need)).toBe(false); // 10 >= 10, blocked
+    });
+});
+describe('isSuitImmune', () => {
+    const enemy = (suit: 'Hearts' | 'Clubs' | 'Spades' | 'Diamonds', jester = false) => ({
+        card: { id: 1, suit, rank: 'Jack' as const },
+        is_jester_active: jester,
+    });
+
+    it('blocks the enemy own suit', () => {
+        expect(isSuitImmune('Clubs', enemy('Clubs'))).toBe(true);
+        expect(isSuitImmune('Hearts', enemy('Clubs'))).toBe(false);
+    });
+
+    it('is lifted once a Jester has cleared immunity', () => {
+        expect(isSuitImmune('Clubs', enemy('Clubs', true))).toBe(false);
+    });
+
+    it('handles a missing suit or enemy without throwing', () => {
+        expect(isSuitImmune(null, enemy('Clubs'))).toBe(false);
+        expect(isSuitImmune('Clubs', null)).toBe(false);
+        expect(isSuitImmune(undefined, undefined)).toBe(false);
     });
 });

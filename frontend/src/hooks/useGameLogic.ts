@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember, ChatMessage } from '../types';
-import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
+import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, isSuitImmune, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
@@ -82,6 +82,10 @@ export const useGameLogic = () => {
   const wasMyTurnRef = useRef<boolean | null>(null);
   // Pending activeEffects expiry timers, so they don't fire after unmount.
   const effectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Combat-effect ids were Date.now() + 1..4, so two batches raised within a
+  // few milliseconds of each other overlapped: duplicate React keys, and one
+  // batch's expiry filter removing the other's effects. A counter can't collide.
+  const effectIdRef = useRef(0);
   // The board's delayed mirror and the newest server state, mirrored into refs
   // because `applyServerState` runs from a socket event rather than a render:
   // a captured value would be stale by the time a frame arrives.
@@ -190,27 +194,27 @@ export const useGameLogic = () => {
             return;
         }
         const effects: CombatEffect[] = [];
-        const ts = Date.now();
+        const nextEffectId = () => ++effectIdRef.current;
         const enemyChanged = prev.active_enemy && next.active_enemy && prev.active_enemy.card.id !== next.active_enemy.card.id;
         if (enemyChanged && prev.active_enemy) {
             // An enemy was just defeated (a new one appeared). Show the killing blow
             // over the old enemy's health before it flies away.
             const blow = calculateBlowDamage(next.last_played ?? [], prev.active_enemy);
-            if (blow > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${blow}`, type: 'damage' });
+            if (blow > 0) effects.push({ id: nextEffectId(), suit: 'Clubs', value: `-${blow}`, type: 'damage' });
         } else if (next.active_enemy && prev.active_enemy) {
             const damage = prev.active_enemy.current_health - next.active_enemy.current_health;
-            if (damage > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${damage}`, type: 'damage' });
+            if (damage > 0) effects.push({ id: nextEffectId(), suit: 'Clubs', value: `-${damage}`, type: 'damage' });
         }
         if (next.shield_value > prev.shield_value) {
-            effects.push({ id: ts + 2, suit: 'Spades', value: `+${next.shield_value - prev.shield_value}`, type: 'shield' });
+            effects.push({ id: nextEffectId(), suit: 'Spades', value: `+${next.shield_value - prev.shield_value}`, type: 'shield' });
         }
         if (next.tavern_deck.length > prev.tavern_deck.length && next.discard_pile.length < prev.discard_pile.length) {
-            effects.push({ id: ts + 3, suit: 'Hearts', value: `+${next.tavern_deck.length - prev.tavern_deck.length}`, type: 'heal' });
+            effects.push({ id: nextEffectId(), suit: 'Hearts', value: `+${next.tavern_deck.length - prev.tavern_deck.length}`, type: 'heal' });
         }
         const isJester = next.last_played?.some(c => c.rank === 'Joker');
         const totalHand = (gs: GameState) => gs.players.reduce((sum, p) => sum + p.hand.length, 0);
         if (!isJester && totalHand(next) > totalHand(prev)) {
-            effects.push({ id: ts + 4, suit: 'Diamonds', value: `+${totalHand(next) - totalHand(prev)}`, type: 'draw' });
+            effects.push({ id: nextEffectId(), suit: 'Diamonds', value: `+${totalHand(next) - totalHand(prev)}`, type: 'draw' });
         }
         if (effects.length > 0) {
             setActiveEffects(prevEffects => [...prevEffects, ...effects]);
@@ -465,9 +469,8 @@ export const useGameLogic = () => {
 
   const isImmuneWarning = useMemo(() => {
     if (!localGameState?.active_enemy || selectedIndices.length === 0) return false;
-    const enemySuit = localGameState.active_enemy.card.suit;
-    if (!enemySuit || localGameState.active_enemy.is_jester_active) return false;
-    return selectedIndices.some(idx => seatedPlayer?.hand[idx]?.suit === enemySuit);
+    const enemy = localGameState.active_enemy;
+    return selectedIndices.some(idx => isSuitImmune(seatedPlayer?.hand[idx]?.suit, enemy));
   }, [selectedIndices, localGameState, seatedPlayer]);
 
   const createGame = async (numPlayers: number) => {

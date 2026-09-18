@@ -667,3 +667,27 @@ fn an_empty_handed_player_who_can_still_yield_is_not_lost() {
     assert_eq!(state.current_player_index, 1);
     assert_eq!(state.status, GameStatus::InProgress);
 }
+
+#[test]
+fn choosing_an_empty_handed_player_is_not_a_loss_while_they_can_still_yield() {
+    /* Pins the reasoning behind check_turn_playable in choose_next_player:
+       playing the Jester resets the yield streak, so the chosen player always
+       has yielding available and must not be declared stuck. If the streak
+       reset ever changes, this test says what breaks. */
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 960)));
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.players[0].hand = vec![Card::joker(961)];
+    state.players[1].hand = Vec::new();
+    state.players[2].hand = vec![Card::new(Suit::Hearts, Rank::Number(5), 962)];
+
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+    assert_eq!(state.consecutive_yields, 0, "the Jester broke any run of yields");
+
+    state.choose_next_player(1).unwrap();
+
+    assert_eq!(state.current_player_index, 1);
+    assert_eq!(state.status, GameStatus::InProgress, "seat 1 can still yield");
+}

@@ -679,6 +679,12 @@ impl GameState {
         }
         self.current_player_index = index;
         self.phase = TurnPhase::AwaitingPlay;
+        /* Every path that opens a turn checks that the player can act. Not
+           currently reachable - playing the Jester resets the yield streak, so
+           a chosen empty-handed player can always still yield - but this is the
+           one remaining turn-opening path that didn't check, and one path
+           forgetting is exactly how the shielded-attack softlock happened. */
+        self.check_turn_playable();
         Ok(())
     }
 

@@ -35,10 +35,25 @@ export const getAttackValue = (card: CardType): number => {
 };
 
 /** Approximates the damage a set of played cards deals (clubs double unless immune). */
+/**
+ * Whether the enemy is immune to `suit` — the mirror of `Enemy::is_immune`.
+ *
+ * The rule was written out separately in three places (blow damage here, the
+ * attack-button warning in the hook, the greyed card in HandArea), which is
+ * three chances for the Jester clause to be forgotten in one of them.
+ */
+export const isSuitImmune = (
+    suit: SuitType | null | undefined,
+    enemy: { card: CardType; is_jester_active: boolean } | null | undefined,
+): boolean => {
+    if (!enemy || !suit || enemy.is_jester_active) return false;
+    return enemy.card.suit === suit;
+};
+
 export const calculateBlowDamage = (cards: CardType[], enemy: { card: CardType; is_jester_active: boolean }): number => {
     const dmg = cards.reduce((sum, c) => sum + getAttackValue(c), 0);
     const clubsDoubled = cards.some(c => c.suit === 'Clubs');
-    const clubsBlocked = enemy.card.suit === 'Clubs' && !enemy.is_jester_active;
+    const clubsBlocked = isSuitImmune('Clubs', enemy);
     return clubsDoubled && !clubsBlocked ? dmg * 2 : dmg;
 };
 
