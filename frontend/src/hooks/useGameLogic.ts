@@ -296,9 +296,11 @@ export const useGameLogic = () => {
   const connectWebSocket = useCallback(() => {
     const id = gameId;
     if (!id || intentionalCloseRef.current) return;
-    // The server uses this only to authorize NewGame/Reset (see WsParams in
-    // main.rs) - every other action still targets the game's own
-    // current_player_index, so this cannot be used to act as someone else.
+    // The server treats this as the connection's identity (see WsParams in
+    // main.rs): it authorizes host-only actions, acting as yourself, and
+    // taking your own turn. Connecting without it means being unable to act,
+    // so the connect callback depends on myPlayerId and reconnects once the
+    // seat is known.
     const seatParam = myPlayerId !== null ? `?seat=${myPlayerId}` : '';
     const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${seatParam}`);
     ws.current = socket;

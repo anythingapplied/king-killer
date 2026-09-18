@@ -8,14 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Correctness / security
 
-- [ ] **Turn actions aren't seat-checked.** The socket now carries an
-      authenticated seat (`?seat=N`) and uses it for host-only actions
-      (`NewGame`/`Reset`) and for acting as yourself (`SetName`, `SendChat`).
-      `PlayCards` / `Yield` / `DiscardCards` / `ChooseNextPlayer` /
-      `UseSoloJester` still only check `current_player_index`, so nobody can
-      play *out of turn* — but any connected client can take the current
-      player's turn *for* them. The mechanism to fix this already exists; it
-      just needs applying to the remaining arms.
 - [ ] **Hands are broadcast to everyone.** The state snapshot ships the whole
       `GameState`, so every client receives every hand and the Tavern deck
       order. Anyone with devtools can read them. Needs per-seat redaction
@@ -102,6 +94,13 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Host gate**: only the room's first-ever member may start a new deal.
 - [x] **`SetName` is authorized against the socket's seat**, not a seat supplied
       in the message body.
+- [x] **Turn actions are seat-checked.** `PlayCards` / `Yield` /
+      `DiscardCards` / `ChooseNextPlayer` / `UseSoloJester` now require the
+      connection's seat to be the one whose turn it is. The rules engine
+      already stopped anyone acting *out of turn*, but any connected client
+      could previously take the current player's turn *for* them.
+      `should_apply` has no catch-all arm, so a new action has to state its own
+      authorization instead of defaulting to allowed.
 - [x] **Chat**, riding inside the room snapshot (no new message type, no
       migration), capped at 100 messages / 300 chars, truncated by chars so
       multi-byte text can't panic.

@@ -561,11 +561,13 @@ async fn get_game(
 
 #[derive(Deserialize)]
 struct WsParams {
-    /// The seat this connection is speaking for, as returned by `join`. Used
-    /// only to authorize host-only actions (`NewGame`/`Reset`) - every other
-    /// action still targets `current_player_index` server-side exactly as
-    /// before, so a wrong or missing seat cannot be used to act as someone
-    /// else, only to lose the ability to start a new deal.
+    /// The seat this connection is speaking for, as returned by `join`.
+    ///
+    /// This is the connection's whole identity: `should_apply` uses it to
+    /// authorize host-only actions, acting as yourself (`SetName`,
+    /// `SendChat`), and taking your own turn. A wrong seat authorizes nothing
+    /// it shouldn't - it can only cost you the ability to act - and a missing
+    /// one leaves the connection able to observe but not play.
     seat: Option<usize>,
 }
 
@@ -589,7 +591,25 @@ fn should_apply(action: &GameAction, seat: Option<usize>, room: Option<&Room>) -
         }),
         // You may only rename the seat you connected as.
         GameAction::SetName { seat: requested, .. } => seat == Some(*requested),
-        _ => true,
+        // Turn actions belong to whoever's turn it is. The rules engine already
+        // enforces that a turn action resolves against `current_player_index`,
+        // so nobody could act *out of turn* - but without this check any
+        // connected client could take the current player's turn *for* them,
+        // playing their cards or yielding on their behalf.
+        GameAction::PlayCards { .. }
+        | GameAction::Yield
+        | GameAction::DiscardCards { .. }
+        | GameAction::ChooseNextPlayer { .. }
+        | GameAction::UseSoloJester => seat
+            .is_some_and(|s| room.is_some_and(|r| r.game.current_player_index == s)),
+        // Anyone seated in the room may chat, spectators included. The sender is
+        // taken from the socket seat in apply_action, so there is nothing to
+        // spoof; a seatless connection is refused here so it can't cause a
+        // pointless history row, persist and broadcast for a message that
+        // apply_action would then drop.
+        GameAction::SendChat { .. } => seat.is_some(),
+        // Deliberately no catch-all: a new action must state its own
+        // authorization rather than defaulting to "allowed".
     }
 }
 
@@ -1029,13 +1049,50 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_turn_actions_are_not_gated_here() {
-        // They are constrained by the game's own current_player_index instead,
-        // so this layer lets them through - including from a spectator.
+    fn turn_actions_are_restricted_to_whoever_s_turn_it_is() {
+        // The rules engine already resolves these against current_player_index,
+        // so nobody could act out of turn - but before this gate any connected
+        // client could take the current player's turn for them.
+        let mut room = host_room();
+        room.game.current_player_index = 1; // new() randomises the starting seat
+
+        for action in [
+            GameAction::Yield,
+            GameAction::PlayCards { indices: vec![0] },
+            GameAction::DiscardCards { indices: vec![0] },
+            GameAction::ChooseNextPlayer { index: 0 },
+            GameAction::UseSoloJester,
+        ] {
+            assert!(should_apply(&action, Some(1), Some(&room)), "the current player may act");
+            assert!(!should_apply(&action, Some(0), Some(&room)), "another seat may not act for them");
+            assert!(!should_apply(&action, Some(2), Some(&room)), "a spectator may not act");
+            assert!(!should_apply(&action, None, Some(&room)), "a seatless connection may not act");
+            assert!(!should_apply(&action, Some(1), None), "not for an unknown room");
+        }
+    }
+
+    #[test]
+    fn the_gate_follows_the_turn_as_it_moves() {
+        let mut room = host_room();
+        room.game.current_player_index = 0;
+        assert!(should_apply(&GameAction::Yield, Some(0), Some(&room)));
+        assert!(!should_apply(&GameAction::Yield, Some(1), Some(&room)));
+
+        room.game.current_player_index = 1;
+        assert!(!should_apply(&GameAction::Yield, Some(0), Some(&room)));
+        assert!(should_apply(&GameAction::Yield, Some(1), Some(&room)));
+    }
+
+    #[test]
+    fn anyone_seated_may_chat_including_spectators() {
         let room = host_room();
-        assert!(should_apply(&GameAction::Yield, Some(2), Some(&room)));
-        assert!(should_apply(&GameAction::PlayCards { indices: vec![0] }, Some(2), Some(&room)));
-        assert!(should_apply(&GameAction::SendChat { text: "hi".into() }, Some(2), Some(&room)));
+        let msg = GameAction::SendChat { text: "hi".into() };
+        assert!(should_apply(&msg, Some(0), Some(&room)));
+        assert!(should_apply(&msg, Some(2), Some(&room)), "watching is not a reason to be silent");
+        assert!(
+            !should_apply(&msg, None, Some(&room)),
+            "a seatless connection is refused here so it cannot cause a pointless persist and broadcast"
+        );
     }
 
     // ---- action_type: the label written to game_history ----
