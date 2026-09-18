@@ -200,7 +200,7 @@ impl Card {
 
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Enemy {
     pub card: Card,
     pub current_health: i32,

@@ -37,7 +37,7 @@ use axum::{
     Json, Router,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use king_killer_core::GameState;
+use king_killer_core::{Card, GameState, Rank};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::{HashMap, HashSet};
@@ -59,7 +59,7 @@ struct AppState {
 
 /// A person attached to a room. Seats below the current game's player count
 /// are that game's players; seats at or above it are spectators ("watching").
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Member {
     seat: usize,
     name: String,
@@ -150,6 +150,55 @@ struct RoomSnapshot {
     members: Vec<Member>,
     #[serde(default)]
     chat: Vec<ChatMessage>,
+}
+
+/// Stand-in for a card the viewer is not entitled to see.
+///
+/// Card ids are handed out in deck-construction order, so a real id identifies
+/// a card as precisely as its face does — the placeholder takes a synthetic id
+/// from the top of the range instead. Only the *count* of these ever reaches
+/// the UI, and the id is derived from the position so a redacted snapshot is
+/// byte-stable: the client compares snapshot JSON to decide whether anything
+/// moved, and ids that churned would make every frame look like a change.
+fn face_down(index: usize) -> Card {
+    Card {
+        suit: None,
+        rank: Rank::Joker,
+        id: u32::MAX - index as u32,
+    }
+}
+
+/// The view of a room that `seat` is entitled to. `None` sees no hidden cards
+/// at all, which is what an anonymous reader gets.
+///
+/// What is hidden, and why the UI doesn't miss it:
+/// * **Other players' hands** — the client only ever reads `.length` for these
+///   (the roster count and the draw-animation total).
+/// * **Tavern deck** — the count is public; the order *is* the next few draws.
+/// * **Castle deck order** — which enemies remain in the tier is public and the
+///   UI shows them, but it filters and sorts them itself, so the shuffled order
+///   (i.e. which enemy comes next) never needs to leave the server.
+///
+/// Note the seat is self-asserted on the WebSocket, so this defends against
+/// reading another player's hand out of your own client — not against someone
+/// deliberately connecting as a seat that isn't theirs. Closing that needs a
+/// per-seat token issued at join; see todo.md.
+fn redact_for(snapshot: &RoomSnapshot, seat: Option<usize>) -> RoomSnapshot {
+    let mut view = snapshot.clone();
+
+    for (i, player) in view.game.players.iter_mut().enumerate() {
+        if Some(i) != seat {
+            player.hand = (0..player.hand.len()).map(face_down).collect();
+        }
+    }
+
+    view.game.tavern_deck = (0..view.game.tavern_deck.len()).map(face_down).collect();
+
+    // Sorting by id is a canonical order unrelated to the shuffle, so it
+    // reveals nothing about draw order while keeping the tier strip intact.
+    view.game.castle_deck.sort_by_key(|c| c.id);
+
+    view
 }
 
 fn snapshot(room: &Room) -> RoomSnapshot {
@@ -509,7 +558,8 @@ async fn create_game(
     let (tx, _) = broadcast::channel(100);
     state.broadcasts.write().unwrap().insert(id.clone(), tx);
 
-    Json(GameResponse { id, state: snapshot(&room) })
+    // Seat 0 is the creator's, assigned here rather than claimed by them.
+    Json(GameResponse { id, state: redact_for(&snapshot(&room), Some(0)) })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -553,7 +603,10 @@ async fn get_game(
     let rooms = state.rooms.read().unwrap();
     if let Some(room) = rooms.get(&id) {
         touch(&state.last_activity);
-        Ok(Json(snapshot(room)))
+        // No caller identity on this route at all, so it gets the
+        // everyone-can-see view. A resuming player's own hand arrives on the
+        // socket a moment later, redacted for their seat.
+        Ok(Json(redact_for(&snapshot(room), None)))
     } else {
         Err(axum::http::StatusCode::NOT_FOUND)
     }
@@ -701,7 +754,7 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
         rooms.get(&id).map(snapshot)
     };
     if let Some(snap) = initial {
-        let msg = serde_json::to_string(&ServerMessage::State(snap)).unwrap();
+        let msg = serde_json::to_string(&ServerMessage::State(redact_for(&snap, seat))).unwrap();
         if sender.send(Message::Text(msg.into())).await.is_err() {
             return;
         }
@@ -710,7 +763,10 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
     let mut rx = rx;
     let mut send_task = tokio::spawn(async move {
         while let Ok(message) = rx.recv().await {
-            let msg = serde_json::to_string(&message).unwrap();
+            // The channel carries one unredacted snapshot; each connection
+            // narrows it to what its own seat may see before serializing.
+            let ServerMessage::State(snap) = &message;
+            let msg = serde_json::to_string(&ServerMessage::State(redact_for(snap, seat))).unwrap();
             if let Err(_) = sender.send(Message::Text(msg.into())).await {
                 break;
             }
@@ -747,6 +803,10 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
 
                     let broadcasts = state_recv.broadcasts.read().unwrap();
                     if let Some(tx) = broadcasts.get(&id) {
+                        // Unredacted on purpose: one snapshot goes onto the
+                        // channel and each connection's send task narrows it to
+                        // its own seat. Redacting here would flatten everyone's
+                        // view to a single seat's.
                         let _ = tx.send(ServerMessage::State(snapshot(&room)));
                     }
                     touch(&state_recv.last_activity);
@@ -764,6 +824,7 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
 #[cfg(test)]
 mod tests {
     use super::*;
+    use king_killer_core::Suit;
 
     // A single-connection in-memory pool keeps the same SQLite database alive
     // for the whole test (each :memory: connection would otherwise be its own DB).
@@ -1081,6 +1142,105 @@ mod tests {
         room.game.current_player_index = 1;
         assert!(!should_apply(&GameAction::Yield, Some(0), Some(&room)));
         assert!(should_apply(&GameAction::Yield, Some(1), Some(&room)));
+    }
+
+    fn dealt_room() -> Room {
+        let mut room = Room {
+            id: "REDACT".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+            ],
+            game: GameState::new(2),
+            chat: Vec::new(),
+        };
+        room.push_chat(0, "hello");
+        room
+    }
+
+    #[test]
+    fn a_seat_sees_its_own_hand_and_nobody_else_s() {
+        let room = dealt_room();
+        let truth = snapshot(&room);
+        let view = redact_for(&truth, Some(0));
+
+        assert_eq!(view.game.players[0].hand, truth.game.players[0].hand, "own hand is intact");
+        assert_ne!(view.game.players[1].hand, truth.game.players[1].hand, "the other hand is hidden");
+        assert_eq!(
+            view.game.players[1].hand.len(),
+            truth.game.players[1].hand.len(),
+            "the count is public - the roster shows it"
+        );
+        assert!(
+            view.game.players[1].hand.iter().all(|c| c.suit.is_none()),
+            "no suit survives redaction"
+        );
+    }
+
+    #[test]
+    fn a_spectator_and_an_anonymous_reader_see_no_hands_at_all() {
+        let room = dealt_room();
+        let truth = snapshot(&room);
+        for seat in [Some(5usize), None] {
+            let view = redact_for(&truth, seat);
+            for (i, p) in view.game.players.iter().enumerate() {
+                assert_ne!(p.hand, truth.game.players[i].hand, "seat {i} hidden from {seat:?}");
+                assert_eq!(p.hand.len(), truth.game.players[i].hand.len());
+            }
+        }
+    }
+
+    #[test]
+    fn the_tavern_order_never_leaves_the_server() {
+        let room = dealt_room();
+        let truth = snapshot(&room);
+        let view = redact_for(&truth, Some(0));
+        assert_eq!(view.game.tavern_deck.len(), truth.game.tavern_deck.len(), "count is public");
+        assert!(
+            view.game.tavern_deck.iter().all(|c| c.suit.is_none()),
+            "the order is the next few draws, so none of it is sent"
+        );
+    }
+
+    #[test]
+    fn the_castle_keeps_its_contents_but_loses_its_order() {
+        let room = dealt_room();
+        let truth = snapshot(&room);
+        let view = redact_for(&truth, Some(0));
+
+        let mut expected: Vec<u32> = truth.game.castle_deck.iter().map(|c| c.id).collect();
+        let actual: Vec<u32> = view.game.castle_deck.iter().map(|c| c.id).collect();
+        expected.sort();
+        assert_eq!(actual, expected, "same enemies, canonical order - the UI sorts them itself");
+        assert!(actual.windows(2).all(|w| w[0] <= w[1]), "order reveals nothing about the shuffle");
+    }
+
+    #[test]
+    fn public_information_is_left_alone() {
+        let mut room = dealt_room();
+        room.game.discard_pile = vec![Card::new(Suit::Hearts, Rank::Number(4), 7001)];
+        room.game.played_cards = vec![Card::new(Suit::Spades, Rank::Number(9), 7002)];
+        room.game.last_played = Some(vec![Card::new(Suit::Clubs, Rank::Ace, 7003)]);
+        let truth = snapshot(&room);
+        let view = redact_for(&truth, Some(1));
+
+        assert_eq!(view.game.discard_pile, truth.game.discard_pile);
+        assert_eq!(view.game.played_cards, truth.game.played_cards);
+        assert_eq!(view.game.last_played, truth.game.last_played);
+        assert_eq!(view.game.active_enemy, truth.game.active_enemy);
+        assert_eq!(view.chat.len(), truth.chat.len());
+        assert_eq!(view.members, truth.members);
+    }
+
+    #[test]
+    fn redaction_is_byte_stable_for_the_same_state() {
+        // The client diffs snapshot JSON to decide whether anything moved, so
+        // placeholder ids must not churn between frames.
+        let room = dealt_room();
+        let truth = snapshot(&room);
+        let a = serde_json::to_string(&redact_for(&truth, Some(0))).unwrap();
+        let b = serde_json::to_string(&redact_for(&truth, Some(0))).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

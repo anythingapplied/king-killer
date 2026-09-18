@@ -8,10 +8,13 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Correctness / security
 
-- [ ] **Hands are broadcast to everyone.** The state snapshot ships the whole
-      `GameState`, so every client receives every hand and the Tavern deck
-      order. Anyone with devtools can read them. Needs per-seat redaction
-      before send — still the largest outstanding change.
+- [ ] **Seats are self-asserted.** The socket's `?seat=N` is whatever the
+      client says it is, so the seat-based gates (host, acting as yourself,
+      taking your turn) and per-seat redaction all stop a player's *own* client
+      doing the wrong thing — not someone deliberately connecting as a seat
+      that isn't theirs. Closing it needs a per-seat token issued by `join`,
+      stored on the `Member`, and required by the socket. That would make the
+      redaction below airtight rather than advisory.
 - [ ] **Rejected actions are silent.** The handler does `let _ = match &action`,
       so an `Err` is swallowed and the unchanged state is rebroadcast; the
       player sees a click that did nothing. Needs a `ServerMessage::Error`
@@ -94,6 +97,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Host gate**: only the room's first-ever member may start a new deal.
 - [x] **`SetName` is authorized against the socket's seat**, not a seat supplied
       in the message body.
+- [x] **Hands and deck order are redacted per seat.** The snapshot used to
+      ship every hand and the Tavern order to every client; `get_game` handed
+      them to an anonymous GET. Each connection now gets a view narrowed to its
+      own seat: other hands and the Tavern deck become face-down placeholders
+      (counts preserved, which is all the UI reads) and the castle deck is sent
+      in canonical order so the next enemy isn't revealed.
 - [x] **Turn actions are seat-checked.** `PlayCards` / `Yield` /
       `DiscardCards` / `ChooseNextPlayer` / `UseSoloJester` now require the
       connection's seat to be the one whose turn it is. The rules engine
