@@ -41,10 +41,6 @@ struct Member {
     host: bool,
 }
 
-/// A room is a persistent set of members plus the currently running game.
-/// A room outlives any single deal: once a game finishes (or even mid-game), a
-/// new deal with a different number of players can be started in the same room.
-#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Room chat is capped: the whole room is serialized into `state_json` on
 /// every action and pushed to every client in each snapshot, so an unbounded
 /// backlog would grow both the DB row and every broadcast for the session.
@@ -73,6 +69,10 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// A room is a persistent set of members plus the currently running game.
+/// A room outlives any single deal: once a game finishes (or even mid-game), a
+/// new deal with a different number of players can be started in the same room.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Room {
     id: String,
     members: Vec<Member>,

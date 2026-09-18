@@ -4,6 +4,7 @@ import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, su
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
+import { newestSeen, unreadCount } from '../chatUnread';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
@@ -66,9 +67,13 @@ export const useGameLogic = () => {
   const [reconnecting, setReconnecting] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => isMuted());
   const [chat, setChat] = useState<ChatMessage[]>([]);
-  // Messages already seen, so the HUD can badge unread ones without needing
-  // the panel to be mounted.
-  const [chatSeen, setChatSeen] = useState(0);
+  // Timestamp of the newest message already seen, so the HUD can badge unread
+  // ones without the panel being mounted.
+  //
+  // Deliberately not a count: the server caps history at 100, so once that cap
+  // is reached `chat.length` stops growing and a count-based badge would freeze
+  // and never report another unread message for the rest of the session.
+  const [chatSeenAt, setChatSeenAt] = useState(0);
   // Games whose join request is currently in flight. Joining claims a seat on
   // the server, so a duplicate (React StrictMode double-invokes the URL-join
   // effect, and a user can press Enter twice) must never fire two join calls.
@@ -448,6 +453,7 @@ export const useGameLogic = () => {
 
   const createGame = async (numPlayers: number) => {
     const playerName = localStorage.getItem('kingkiller_player_name') || '';
+    setChat([]); setChatSeenAt(0);
     const res = await fetch(`${API_BASE}/api/game`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -503,6 +509,7 @@ export const useGameLogic = () => {
       // A seat from an earlier session (resume case) skips the join call.
       const savedSeat = parseSeat(localStorage.getItem(`seat_${id}`));
       if (savedSeat !== null) {
+        setChat([]); setChatSeenAt(0);
         setGameId(id);
         setGameState(snap.game);
         setRoster(snap.members);
@@ -519,6 +526,7 @@ export const useGameLogic = () => {
       });
       if (joinRes.ok) {
         const data = await joinRes.json();
+        setChat([]); setChatSeenAt(0);
         setGameId(id);
         setGameState(snap.game);
         setRoster(snap.members);
@@ -624,6 +632,9 @@ export const useGameLogic = () => {
     setGameId(null); setGameState(null); setRoster([]); setLocalGameState(null); setMyPlayerId(null); setSelectedIndices([]);
     setDefeatFlight(null);
     setReconnecting(false);
+    // Without this the next room shows the previous room's conversation until
+    // its first snapshot lands, and the seen-marker carries over with it.
+    setChat([]); setChatSeenAt(0);
   };
 
   useEffect(() => {
@@ -647,8 +658,9 @@ export const useGameLogic = () => {
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
-    chat, sendChat, unreadChat: Math.max(0, chat.length - chatSeen),
-    markChatRead: () => setChatSeen(chat.length),
+    chat, sendChat,
+    unreadChat: unreadCount(chat, chatSeenAt),
+    markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
     isChoosingNextPlayer,
     createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
