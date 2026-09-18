@@ -198,7 +198,7 @@ fn test_actions_replay_from_seed() {
         serde_json::to_string(&snapshot).unwrap(),
         serde_json::to_string(&game).unwrap()
     );
-    assert_eq!(RULES_VERSION, 3, "bump when rules or RNG change");
+    assert_eq!(RULES_VERSION, 4, "bump when rules or RNG change");
 }
 
 #[test]
@@ -586,4 +586,84 @@ fn test_a_rejected_discard_neither_reorders_the_hand_nor_logs() {
     assert_eq!(state.players[0].hand, hand);
     /* A rejected discard never happened, so it must not appear in the log. */
     assert_eq!(state.game_log.len(), log_len);
+}
+
+#[test]
+fn solo_player_loses_when_the_attack_is_fully_shielded_and_the_hand_is_empty() {
+    /* The reported bug. A shield that cancels the enemy's attack entirely
+       skips the discard step - and the loss check used to live only on that
+       path, so the turn came straight back to a solo player with no cards, no
+       Jesters, and no game over. */
+    let mut state = GameState::new(1);
+    state.solo_jesters = 0;
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Diamonds, Rank::King, 920)));
+    state.shield_value = 20; // already covers the King's 20 attack
+    state.players[0].hand = vec![Card::new(Suit::Spades, Rank::Number(2), 921)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+
+    assert!(state.players[0].hand.is_empty());
+    assert!(
+        matches!(state.status, GameStatus::Lost(_)),
+        "an empty hand with no Jester left is a loss, shielded or not"
+    );
+}
+
+#[test]
+fn solo_player_with_a_jester_left_is_not_lost_yet() {
+    /* Same position, but a Jester can still refresh the hand - so this must
+       not be declared a loss. */
+    let mut state = GameState::new(1);
+    state.solo_jesters = 1;
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Diamonds, Rank::King, 930)));
+    state.shield_value = 20;
+    state.players[0].hand = vec![Card::new(Suit::Spades, Rank::Number(2), 931)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.play_cards(vec![0]).unwrap();
+
+    assert_eq!(state.status, GameStatus::InProgress);
+}
+
+#[test]
+fn a_player_who_can_neither_play_nor_yield_loses() {
+    /* Rules: the players lose if anyone [rules wording removed]. An empty-handed player can normally still yield - but not
+       once everyone else already has. */
+    let mut state = GameState::new(2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 940)));
+    state.shield_value = 10; // cancels the Jack's attack, so yielding costs nothing
+    state.players[0].hand = vec![Card::new(Suit::Hearts, Rank::Number(5), 941)];
+    state.players[1].hand = Vec::new();
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.yield_turn().unwrap();
+
+    assert_eq!(state.current_player_index, 1);
+    assert!(
+        matches!(state.status, GameStatus::Lost(_)),
+        "seat 1 has no cards and cannot yield after seat 0 just did"
+    );
+}
+
+#[test]
+fn an_empty_handed_player_who_can_still_yield_is_not_lost() {
+    /* Three players: one yield does not exhaust the table's ability to yield,
+       so seat 1 still has a legal move. */
+    let mut state = GameState::new(3);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 950)));
+    state.shield_value = 10;
+    state.players[0].hand = vec![Card::new(Suit::Hearts, Rank::Number(5), 951)];
+    state.players[1].hand = Vec::new();
+    state.players[2].hand = vec![Card::new(Suit::Hearts, Rank::Number(5), 952)];
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+
+    state.yield_turn().unwrap();
+
+    assert_eq!(state.current_player_index, 1);
+    assert_eq!(state.status, GameStatus::InProgress);
 }

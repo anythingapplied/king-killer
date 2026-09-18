@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bump whenever game rules OR the deterministic RNG algorithm change.
 /// History replay and snapshot migration key off this value.
-pub const RULES_VERSION: u32 = 3;
+pub const RULES_VERSION: u32 = 4;
 
 /// Deterministic, portable PRNG for all game randomness (SplitMix64).
 ///
@@ -547,7 +547,7 @@ impl GameState {
            spent there is no legal move left - re-run the check so the game ends
            instead of sitting in AwaitingDiscard forever. */
         self.recheck_discard_satisfiable();
-        self.check_solo_loss();
+        self.check_turn_playable();
         Ok(())
     }
 
@@ -661,7 +661,7 @@ impl GameState {
             }
             self.discard_pile.extend(self.played_cards.drain(..));
             self.next_enemy();
-            self.check_solo_loss();
+            self.check_turn_playable();
             return Ok(());
         }
 
@@ -725,9 +725,8 @@ impl GameState {
                holding a Jester can still refresh their hand, so hold off. */
             self.recheck_discard_satisfiable();
         } else {
-            // No damage to take, move to next player
-            self.current_player_index = (self.current_player_index + 1) % self.players.len();
-            self.phase = TurnPhase::AwaitingPlay;
+            /* No damage to take - the turn simply passes on. */
+            self.advance_turn();
         }
         Ok(())
     }
@@ -751,9 +750,7 @@ impl GameState {
                 self.log(Some(self.current_player_index), LogKind::Discarded, discarded_cards.clone());
                 self.last_discarded = Some(discarded_cards.clone());
                 self.discard_pile.extend(discarded_cards);
-                self.current_player_index = (self.current_player_index + 1) % self.players.len();
-                self.phase = TurnPhase::AwaitingPlay;
-                self.check_solo_loss(); // Check if next player (if solo) is stuck
+                self.advance_turn();
             }
             Ok(())
         } else {
@@ -803,14 +800,44 @@ impl GameState {
         }
     }
 
-    fn check_solo_loss(&mut self) {
-        if self.players.len() == 1 && self.status == GameStatus::InProgress {
-            let player = &self.players[0];
-            // If they have cards or Jesters, they aren't lost yet.
-            if player.hand.is_empty() && self.solo_jesters == 0 {
+    /// Ends the game if whoever's turn it now is cannot legally act.
+    ///
+    /// Rules: the players lose if anyone [rules wording removed]. A solo player has no yield, so an empty hand with no Jester
+    /// left is terminal. At a full table an empty-handed player can normally
+    /// still yield - unless everyone else already yielded, which is the one
+    /// case where they are genuinely stuck.
+    fn check_turn_playable(&mut self) {
+        if self.status != GameStatus::InProgress {
+            return;
+        }
+        if !self.players[self.current_player_index].hand.is_empty() {
+            return;
+        }
+
+        if self.players.len() == 1 {
+            if self.solo_jesters == 0 {
                 self.status = GameStatus::Lost("Out of cards and Jesters.".to_string());
             }
+            return;
         }
+
+        if self.consecutive_yields + 1 >= self.players.len() {
+            self.status = GameStatus::Lost("No cards to play and unable to yield.".to_string());
+        }
+    }
+
+    /// Hands the turn to the next player and opens their play phase.
+    ///
+    /// Every path that ends a turn goes through here so the can-they-actually-move
+    /// check cannot be forgotten. It was previously duplicated at each site and
+    /// missing from one of them: when a shield cancelled the enemy's attack
+    /// entirely, the discard step was skipped, and with it the only loss check
+    /// on that path - handing the turn back to a solo player with an empty hand
+    /// and no Jester, with no game over.
+    fn advance_turn(&mut self) {
+        self.current_player_index = (self.current_player_index + 1) % self.players.len();
+        self.phase = TurnPhase::AwaitingPlay;
+        self.check_turn_playable();
     }
 
     fn is_valid_combo(&self, cards: &[Card]) -> bool {
