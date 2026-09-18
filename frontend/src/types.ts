@@ -63,12 +63,24 @@ export interface RoomMember {
     host?: boolean;
 }
 
+/** A room chat message. `name` is the sender's name as it stood when they
+ *  sent it, so a later rename doesn't rewrite history. */
+export interface ChatMessage {
+    seat: number;
+    name: string;
+    text: string;
+    /** Unix epoch millis. */
+    at: number;
+}
+
 /** The state broadcast by the server: the shared game plus the full room
  * roster so spectators are visible to everyone. */
 export interface RoomSnapshot {
     id: string;
     game: GameState;
     members: RoomMember[];
+    /** Optional so a snapshot from a server without chat still type-checks. */
+    chat?: ChatMessage[];
 }
 
 export type TurnPhase = 
@@ -121,4 +133,7 @@ export type GameAction =
     | { type: 'UseSoloJester' }
     | { type: 'Reset' }
     | { type: 'NewGame', payload: { num_players: number } }
-    | { type: 'SetName', payload: { seat: number, name: string } };
+    | { type: 'SetName', payload: { seat: number, name: string } }
+    // No seat: the server attributes the message to the socket's own
+    // authenticated seat, so a client can't post as anyone else.
+    | { type: 'SendChat', payload: { text: string } };

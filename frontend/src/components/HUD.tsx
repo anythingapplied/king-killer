@@ -18,6 +18,8 @@ interface HUDProps {
     onMenuClick: () => void;
     onToggleMute: () => void;
     onLogClick: () => void;
+    onChatClick: () => void;
+    unreadChat: number;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
     /** Only the room's host may start a new deal; the server enforces this
@@ -32,8 +34,8 @@ interface HUDProps {
 const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost,
-    onMenuClick, onToggleMute, onLogClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat,
+    onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator ? undefined : gameState.players[myPlayerId];
@@ -85,6 +87,14 @@ const HUD: React.FC<HUDProps> = ({
                         <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
                     )}
                     <button onClick={onLogClick} title="Show the game log" aria-label="Show the game log" data-testid="log-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none">📜</button>
+                    <button onClick={onChatClick} title="Open chat" aria-label={unreadChat > 0 ? `Open chat, ${unreadChat} unread` : 'Open chat'} data-testid="chat-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none relative">
+                        💬
+                        {unreadChat > 0 && (
+                            <span className="absolute -top-1 -right-1 bg-blue-500 text-white rounded-full min-w-4 h-4 px-1 flex items-center justify-center t-micro font-black border border-slate-900">
+                                {unreadChat > 9 ? '9+' : unreadChat}
+                            </span>
+                        )}
+                    </button>
                     {/* Solo never chimes (the turn comes straight back), so the
                         control would be dead weight on the tightest layout. */}
                     {!isSolo && (

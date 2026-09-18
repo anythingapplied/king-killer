@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use futures::{SinkExt, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
@@ -45,10 +45,69 @@ struct Member {
 /// A room outlives any single deal: once a game finishes (or even mid-game), a
 /// new deal with a different number of players can be started in the same room.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Room chat is capped: the whole room is serialized into `state_json` on
+/// every action and pushed to every client in each snapshot, so an unbounded
+/// backlog would grow both the DB row and every broadcast for the session.
+const CHAT_CAP: usize = 100;
+/// Per-message ceiling, applied in `chars` so a multi-byte message can never be
+/// cut mid-codepoint (slicing bytes would panic).
+const CHAT_MAX_LEN: usize = 300;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct ChatMessage {
+    /// Seat of the sender, taken from the socket's authenticated seat - never
+    /// from the message body.
+    seat: usize,
+    /// The sender's name as it stood when they sent it, so a later rename
+    /// doesn't silently rewrite history.
+    name: String,
+    text: String,
+    /// Unix epoch millis. Clients format it; the server just stamps it.
+    at: u64,
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 struct Room {
     id: String,
     members: Vec<Member>,
     game: GameState,
+    /// Room-level, not game-level: chat survives a new deal. `#[serde(default)]`
+    /// keeps rooms persisted before chat existed loadable.
+    #[serde(default)]
+    chat: Vec<ChatMessage>,
+}
+
+impl Room {
+    /// Appends a chat message from `seat`.
+    ///
+    /// The sender must actually be in the roster - the seat arrives from a
+    /// query param, so an arbitrary one must not be able to post. Empty or
+    /// whitespace-only messages are dropped rather than stored.
+    fn push_chat(&mut self, seat: usize, text: &str) {
+        let Some(member) = self.members.iter().find(|m| m.seat == seat) else {
+            return;
+        };
+        let name = member.name.clone();
+
+        // `chars().take()` rather than byte slicing: `&text[..CHAT_MAX_LEN]`
+        // panics if the boundary lands inside a multi-byte character.
+        let text: String = text.trim().chars().take(CHAT_MAX_LEN).collect();
+        if text.is_empty() {
+            return;
+        }
+
+        self.chat.push(ChatMessage { seat, name, text, at: now_millis() });
+        if self.chat.len() > CHAT_CAP {
+            let excess = self.chat.len() - CHAT_CAP;
+            self.chat.drain(0..excess);
+        }
+    }
 }
 
 /// What clients receive: the shared game plus the full room roster, so
@@ -58,6 +117,8 @@ struct RoomSnapshot {
     id: String,
     game: GameState,
     members: Vec<Member>,
+    #[serde(default)]
+    chat: Vec<ChatMessage>,
 }
 
 fn snapshot(room: &Room) -> RoomSnapshot {
@@ -73,6 +134,7 @@ fn snapshot(room: &Room) -> RoomSnapshot {
         id: room.id.clone(),
         game: room.game.clone(),
         members,
+        chat: room.chat.clone(),
     }
 }
 
@@ -229,6 +291,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     id,
                     members,
                     game,
+                    chat: Vec::new(),
                 },
             );
         }
@@ -337,6 +400,9 @@ enum GameAction {
     Reset,
     NewGame { num_players: u32 },
     SetName { seat: usize, name: String },
+    /// Carries no seat: the sender is taken from the socket's authenticated
+    /// seat, so a client cannot post as anyone but itself.
+    SendChat { text: String },
 }
 
 #[derive(Clone, Serialize)]
@@ -375,6 +441,7 @@ async fn create_game(
         id: id.clone(),
         members,
         game,
+        chat: Vec::new(),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -536,6 +603,7 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
                     GameAction::Reset => "reset",
                     GameAction::NewGame { .. } => "new_game",
                     GameAction::SetName { .. } => "set_name",
+                    GameAction::SendChat { .. } => "send_chat",
                 };
 
                 let room = {
@@ -564,6 +632,20 @@ async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state
                                 }
                                 Ok(())
                             }
+                            GameAction::SendChat { text } => {
+                                // Sender comes from the socket, never the body.
+                                // A connection with no seat cannot post.
+                                if let Some(sender_seat) = seat {
+                                    room.push_chat(sender_seat, text);
+                                }
+                                Ok(())
+                            }
+                            // Short-circuited above, before this match is
+                            // reached. The arm exists so adding the Ping
+                            // variant doesn't leave the match non-exhaustive -
+                            // which it did, and this crate has not compiled
+                            // since.
+                            GameAction::Ping => Ok(()),
                         };
                         room.clone()
                     })
@@ -620,6 +702,7 @@ mod tests {
                 Member { seat: 2, name: "Carl".to_string(), host: false },
             ],
             game,
+            chat: Vec::new(),
         };
 
         persist_room(&pool, &room).await;
@@ -681,6 +764,7 @@ mod tests {
             id: "SEATS".to_string(),
             members: vec![Member { seat: 0, name: "Host".to_string(), host: true }],
             game: GameState::new(2),
+            chat: Vec::new(),
         };
 
         let (bob, bob_player) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -709,6 +793,7 @@ mod tests {
                 Member { seat: 2, name: "Carol".to_string(), host: false },
             ],
             game: GameState::new(3),
+            chat: Vec::new(),
         };
 
         // Shrink to two players: Carol moves to a spectator seat (>1).
@@ -730,6 +815,7 @@ mod tests {
             id: "GAME01".to_string(),
             members: vec![Member { seat: 0, name: String::new(), host: true }],
             game,
+            chat: Vec::new(),
         })
         .await;
         let game = GameState::new(2);
@@ -750,6 +836,7 @@ mod tests {
             id: "HOSTTEST".to_string(),
             members: vec![],
             game: GameState::new(2),
+            chat: Vec::new(),
         };
 
         let (alice_seat, _) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -779,6 +866,7 @@ mod tests {
                 Member { seat: 1, name: "Bob".to_string(), host: false },
             ],
             game: GameState::new(2),
+            chat: Vec::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -800,6 +888,7 @@ mod tests {
                 Member { seat: 1, name: "Bob".to_string(), host: false },
             ],
             game: GameState::new(2),
+            chat: Vec::new(),
         };
 
         let is_host = |seat: Option<usize>| {
@@ -825,5 +914,91 @@ mod tests {
         assert!(!authorized(Some(0), 1), "seat 0 may not rename seat 1");
         assert!(!authorized(None, 0), "a connection with no seat may rename no one");
         assert!(!authorized(Some(1), 0), "seat 1 may not rename seat 0");
+    }
+
+    fn chat_room() -> Room {
+        Room {
+            id: "CHAT".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true },
+                Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 2, name: "Wanda".to_string(), host: false }, // spectator
+            ],
+            game: GameState::new(2),
+            chat: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn chat_is_attributed_to_the_sending_seat() {
+        let mut room = chat_room();
+        room.push_chat(1, "hello");
+        assert_eq!(room.chat.len(), 1);
+        assert_eq!(room.chat[0].seat, 1);
+        assert_eq!(room.chat[0].name, "Bob");
+        assert_eq!(room.chat[0].text, "hello");
+    }
+
+    #[test]
+    fn spectators_can_chat() {
+        // Watching a game and being unable to say anything would make the
+        // feature useless for exactly the people most likely to use it.
+        let mut room = chat_room();
+        room.push_chat(2, "nice play");
+        assert_eq!(room.chat.len(), 1);
+        assert_eq!(room.chat[0].name, "Wanda");
+    }
+
+    #[test]
+    fn a_seat_outside_the_roster_cannot_post() {
+        // `seat` arrives from a query param, so an arbitrary value must not be
+        // able to inject messages.
+        let mut room = chat_room();
+        room.push_chat(99, "i am nobody");
+        assert!(room.chat.is_empty());
+    }
+
+    #[test]
+    fn blank_messages_are_dropped_and_text_is_trimmed() {
+        let mut room = chat_room();
+        room.push_chat(0, "   ");
+        room.push_chat(0, "\n\t");
+        assert!(room.chat.is_empty(), "whitespace-only messages are not stored");
+
+        room.push_chat(0, "  padded  ");
+        assert_eq!(room.chat[0].text, "padded");
+    }
+
+    #[test]
+    fn long_multibyte_messages_are_truncated_without_panicking() {
+        // Byte-slicing at CHAT_MAX_LEN would panic here: these are 4-byte
+        // characters, so the boundary lands mid-codepoint.
+        let mut room = chat_room();
+        let long_emoji = "🂡".repeat(CHAT_MAX_LEN + 50);
+        room.push_chat(0, &long_emoji);
+        assert_eq!(room.chat[0].text.chars().count(), CHAT_MAX_LEN);
+    }
+
+    #[test]
+    fn chat_history_is_capped() {
+        let mut room = chat_room();
+        for i in 0..(CHAT_CAP + 25) {
+            room.push_chat(0, &format!("msg {}", i));
+        }
+        assert_eq!(room.chat.len(), CHAT_CAP);
+        // The newest survive, the oldest fall off the front.
+        assert_eq!(room.chat.last().unwrap().text, format!("msg {}", CHAT_CAP + 24));
+    }
+
+    #[test]
+    fn a_rename_does_not_rewrite_chat_history() {
+        let mut room = chat_room();
+        room.push_chat(1, "before");
+        if let Some(m) = room.members.iter_mut().find(|m| m.seat == 1) {
+            m.name = "Robert".to_string();
+        }
+        room.push_chat(1, "after");
+        assert_eq!(room.chat[0].name, "Bob");
+        assert_eq!(room.chat[1].name, "Robert");
     }
 }

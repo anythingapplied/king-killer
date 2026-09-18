@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember } from '../types';
+import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember, ChatMessage } from '../types';
 import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
@@ -65,6 +65,10 @@ export const useGameLogic = () => {
   const lastGameStateJsonRef = useRef<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => isMuted());
+  const [chat, setChat] = useState<ChatMessage[]>([]);
+  // Messages already seen, so the HUD can badge unread ones without needing
+  // the panel to be mounted.
+  const [chatSeen, setChatSeen] = useState(0);
   // Games whose join request is currently in flight. Joining claims a seat on
   // the server, so a duplicate (React StrictMode double-invokes the URL-join
   // effect, and a user can press Enter twice) must never fire two join calls.
@@ -302,6 +306,7 @@ export const useGameLogic = () => {
       lastGameStateJsonRef.current = receivedJson;
       setGameState(payload.game);
       setRoster(payload.members);
+      setChat(payload.chat ?? []);
     };
     socket.onmessage = (event) => {
       if (isStale()) return;
@@ -560,6 +565,12 @@ export const useGameLogic = () => {
     if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
   };
 
+  const sendChat = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    sendAction({ type: 'SendChat', payload: { text: trimmed } });
+  };
+
   const toggleMute = useCallback(() => {
     const next = !isMuted();
     setMuted(next);
@@ -636,6 +647,8 @@ export const useGameLogic = () => {
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
+    chat, sendChat, unreadChat: Math.max(0, chat.length - chatSeen),
+    markChatRead: () => setChatSeen(chat.length),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
     isChoosingNextPlayer,
     createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer

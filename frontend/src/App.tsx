@@ -5,6 +5,7 @@ import Arena from './components/Arena';
 import HandArea from './components/HandArea';
 import ActionFooter from './components/ActionFooter';
 import GameLog from './components/GameLog';
+import Chat from './components/Chat';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -33,18 +34,27 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost,
+        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
 
     const [showLog, setShowLog] = useState(false);
+    const [showChat, setShowChat] = useState(false);
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
     const [showNewGame, setShowNewGame] = useState(false);
 
     useEffect(() => {
         if (playerName) localStorage.setItem('kingkiller_player_name', playerName);
     }, [playerName]);
+
+    // Keep clearing the badge while the panel is open, not just when it opens -
+    // otherwise messages arriving mid-read would stack up as "unread".
+    useEffect(() => {
+        if (showChat) markChatRead();
+        // markChatRead is rebuilt each render; chat.length is the real trigger.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [showChat, chat.length]);
 
     if (!gameId) {
         return (
@@ -120,6 +130,8 @@ const App: React.FC = () => {
                 onMenuClick={() => exitToMenu()}
                 onToggleMute={toggleMute}
                 onLogClick={() => setShowLog(true)}
+                onChatClick={() => setShowChat(true)}
+                unreadChat={unreadChat}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
                 onNewGameClick={() => setShowNewGame(true)}
@@ -187,6 +199,17 @@ const App: React.FC = () => {
 
             <AnimatePresence>
                 {showLog && <GameLog gameState={localGameState} onClose={() => setShowLog(false)} />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showChat && (
+                    <Chat
+                        chat={chat}
+                        myPlayerId={myPlayerId}
+                        onSend={sendChat}
+                        onClose={() => setShowChat(false)}
+                    />
+                )}
             </AnimatePresence>
 
             {/* Global Overlays */}
