@@ -36,6 +36,7 @@ open are now closed, and a couple that read as closed turned out to be partial.
       hand position.
 - [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
       before cleanup. (`last_played` is already on the state.)
+- [ ] **New game starts with random player not host everytime**
 
 ### Testing & infra
 
