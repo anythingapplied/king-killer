@@ -296,13 +296,13 @@ export const useGameLogic = () => {
   const connectWebSocket = useCallback(() => {
     const id = gameId;
     if (!id || intentionalCloseRef.current) return;
-    // The server treats this as the connection's identity (see WsParams in
-    // main.rs): it authorizes host-only actions, acting as yourself, and
-    // taking your own turn. Connecting without it means being unable to act,
-    // so the connect callback depends on myPlayerId and reconnects once the
-    // seat is known.
-    const seatParam = myPlayerId !== null ? `?seat=${myPlayerId}` : '';
-    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${seatParam}`);
+    // The seat token is the connection's identity (see WsParams in main.rs).
+    // The server derives the seat from it rather than trusting a seat we claim,
+    // so a missing token means watching rather than playing. Every path that
+    // sets gameId writes the token first, so it is always in place by the time
+    // this runs - no need to re-connect when the seat becomes known.
+    const token = localStorage.getItem(`token_${id}`);
+    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
     ws.current = socket;
     // A socket we have already moved on from can still deliver a frame that was
     // in flight when we closed it. Applying it overwrites the room we just
@@ -366,7 +366,7 @@ export const useGameLogic = () => {
       backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
       scheduleReconnect();
     };
-  }, [gameId, myPlayerId, scheduleReconnect, applyServerState]);
+  }, [gameId, scheduleReconnect, applyServerState]);
 
   useEffect(() => {
     connectRef.current = connectWebSocket;
@@ -494,6 +494,8 @@ export const useGameLogic = () => {
     serverStateRef.current = data.state.game;
     applyServerState(data.state.game);
     localStorage.setItem(`seat_${data.id}`, "0");
+    // Issued once, here and nowhere else; without it this client cannot act.
+    if (data.token) localStorage.setItem(`token_${data.id}`, data.token);
     setUrlGameId(data.id);
   };
 
@@ -533,8 +535,12 @@ export const useGameLogic = () => {
       const snap = await res.json() as RoomSnapshot;
 
       // A seat from an earlier session (resume case) skips the join call.
+      // Only resume without re-joining if we still hold the seat's token; a
+      // remembered seat number alone no longer proves anything, so fall through
+      // to a fresh join instead of connecting as an observer.
       const savedSeat = parseSeat(localStorage.getItem(`seat_${id}`));
-      if (savedSeat !== null) {
+      const savedToken = localStorage.getItem(`token_${id}`);
+      if (savedSeat !== null && savedToken) {
         setChat([]); setChatSeenAt(0);
         setGameId(id);
         serverStateRef.current = snap.game;
@@ -560,6 +566,7 @@ export const useGameLogic = () => {
         setRoster(snap.members);
         setMyPlayerId(data.seat_index);
         localStorage.setItem(`seat_${id}`, data.seat_index.toString());
+        if (data.token) localStorage.setItem(`token_${id}`, data.token);
         setUrlGameId(id, push);
       } else {
         alert("Could not join the game. Please try again.");
@@ -663,6 +670,9 @@ export const useGameLogic = () => {
     }
     clearUrlGameId(push);
     clearTransitionTimers();
+    // The token deliberately survives leaving: it is what lets you come back to
+    // the same seat. Dropping it would force a fresh join, and the old member
+    // still holds your seat, so you would return as a spectator.
     serverStateRef.current = null;
     commitLocalState(null);
     setGameId(null); setRoster([]); setMyPlayerId(null); setSelectedIndices([]);

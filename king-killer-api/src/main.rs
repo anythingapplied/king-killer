@@ -9,11 +9,12 @@
 //!
 //! # Authority
 //!
-//! The socket authenticates a seat via `?seat=N`, and that is the *only*
-//! source of caller identity — never a seat in a message body. It gates two
-//! things: host-only actions (`NewGame`/`Reset`) and acting as yourself
-//! (`SetName`, `SendChat`). Everything else targets the game's own
-//! `current_player_index`, so a wrong seat cannot be used to play out of turn.
+//! The socket authenticates with `?token=...`, the secret issued once by
+//! `join`/`create`, and the seat is *derived* from it - a seat number is
+//! public, so nothing a client asserts about which seat it holds is trusted.
+//! That identity gates host-only actions (`NewGame`/`Reset`), acting as
+//! yourself (`SetName`, `SendChat`) and taking your own turn, and it decides
+//! how much of the state a connection is shown (see `redact_for`).
 //!
 //! Rejected actions are dropped *before* being timestamped, persisted, or
 //! broadcast, and the client is not told. That is deliberate — the UI hides
@@ -70,6 +71,56 @@ struct Member {
     /// this field existed loadable, as `false`, i.e. no host.
     #[serde(default)]
     host: bool,
+    /// Secret proving a connection owns this seat. Issued once by `join` (or
+    /// `create`), stored by that client, and presented on the WebSocket.
+    ///
+    /// This is the only thing that makes a seat *yours*: a seat number is
+    /// public, so before tokens a client could simply claim to be somebody
+    /// else. Never leaves the server except in the one response that issues it
+    /// — in particular `RoomSnapshot` carries [`MemberView`], not this.
+    ///
+    /// `#[serde(default)]` loads rooms persisted before tokens existed; an
+    /// empty token matches nothing, so those members cannot be authenticated.
+    #[serde(default)]
+    token: String,
+}
+
+/// The public face of a member: everything except the seat's secret.
+///
+/// Deliberately a separate type rather than `#[serde(skip)]` on the token —
+/// the whole `Room` is serialized to `state_json` for persistence, so skipping
+/// the field would silently stop saving it. This way the compiler enforces
+/// that what goes to clients cannot carry it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct MemberView {
+    seat: usize,
+    name: String,
+    host: bool,
+}
+
+impl From<&Member> for MemberView {
+    fn from(m: &Member) -> Self {
+        MemberView { seat: m.seat, name: m.name.clone(), host: m.host }
+    }
+}
+
+/// A seat secret. 32 chars from the same alphabet as room codes.
+fn new_token() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::rng();
+    (0..32).map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char).collect()
+}
+
+/// The seat a connection is entitled to act as, proven by its token.
+///
+/// An absent, empty or unrecognised token is nobody: such a connection may
+/// watch, but `should_apply` will refuse every action it sends.
+fn seat_for_token(room: &Room, token: Option<&str>) -> Option<usize> {
+    let token = token?;
+    if token.is_empty() {
+        return None;
+    }
+    room.members.iter().find(|m| m.token == token).map(|m| m.seat)
 }
 
 /// Room chat is capped: the whole room is serialized into `state_json` on
@@ -147,7 +198,7 @@ impl Room {
 struct RoomSnapshot {
     id: String,
     game: GameState,
-    members: Vec<Member>,
+    members: Vec<MemberView>,
     #[serde(default)]
     chat: Vec<ChatMessage>,
 }
@@ -204,7 +255,7 @@ fn redact_for(snapshot: &RoomSnapshot, seat: Option<usize>) -> RoomSnapshot {
 fn snapshot(room: &Room) -> RoomSnapshot {
     // Keep roster player names authoritative from the game state. Spectator
     // names live only in the members list, so they are untouched here.
-    let mut members = room.members.clone();
+    let mut members: Vec<MemberView> = room.members.iter().map(MemberView::from).collect();
     for (i, player) in room.game.players.iter().enumerate() {
         if let Some(m) = members.iter_mut().find(|m| m.seat == i) {
             m.name = player.name.clone();
@@ -245,7 +296,7 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
 /// Claims a seat for a new joiner. Prefers a random free player seat; when the
 /// game is full the joiner watches instead, receiving a monotonic seat at or
 /// above the player count. Returns the seat and whether it is a player seat.
-fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
+fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
     // Recorded before either branch pushes a Member, so it reflects the room
     // as it was before this join - i.e. whether anyone was here already.
     let is_first_ever_member = room.members.is_empty();
@@ -254,26 +305,30 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool) {
     let free: Vec<usize> = (0..player_count).filter(|s| !taken.contains(s)).collect();
 
     if let Some(&seat) = free.choose(&mut rand::rng()) {
+        let token = new_token();
         room.members.push(Member {
             seat,
             name: name.clone().unwrap_or_default(),
             host: is_first_ever_member,
+            token: token.clone(),
         });
         if let Some(provided_name) = name {
             if let Some(player) = room.game.players.get_mut(seat) {
                 player.name = provided_name;
             }
         }
-        (seat, true)
+        (seat, true, token)
     } else {
         // All player seats are taken: this member watches the game.
         let seat = room.members.iter().map(|m| m.seat).max().map_or(player_count, |m| m + 1);
+        let token = new_token();
         room.members.push(Member {
             seat,
             name: name.unwrap_or_default(),
             host: is_first_ever_member,
+            token: token.clone(),
         });
-        (seat, false)
+        (seat, false, token)
     }
 }
 
@@ -378,6 +433,9 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     seat: i,
                     name: p.name.clone(),
                     host: order == 0,
+                    // Predates tokens; nobody can authenticate as these seats.
+                    // See todo.md - such a room is effectively read-only.
+                    token: String::new(),
                 })
                 .collect();
             rooms.insert(
@@ -491,6 +549,8 @@ struct CreateGameRequest {
 struct GameResponse {
     id: String,
     state: RoomSnapshot,
+    /// The creator's seat-0 token, issued here and nowhere else.
+    token: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -540,10 +600,12 @@ async fn create_game(
             player.name = name.clone();
         }
     }
+    let creator_token = new_token();
     members.push(Member {
         seat: 0,
         name: game.players[0].name.clone(),
         host: true, // the room's creator is its first-ever member
+        token: creator_token.clone(),
     });
 
     let room = Room {
@@ -559,7 +621,11 @@ async fn create_game(
     state.broadcasts.write().unwrap().insert(id.clone(), tx);
 
     // Seat 0 is the creator's, assigned here rather than claimed by them.
-    Json(GameResponse { id, state: redact_for(&snapshot(&room), Some(0)) })
+    Json(GameResponse {
+        id,
+        state: redact_for(&snapshot(&room), Some(0)),
+        token: creator_token,
+    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -570,6 +636,9 @@ struct JoinRequest {
 #[derive(Serialize)]
 struct JoinResponse {
     seat_index: usize,
+    /// The seat's secret. The client stores it and presents it on the socket;
+    /// this response is the only time the server ever sends it.
+    token: String,
     /// True when all player seats were taken and this member got a spectator
     /// seat (they can watch but not act).
     spectator: bool,
@@ -583,7 +652,7 @@ async fn join_game_seat(
     let response = {
         let mut rooms = state.rooms.write().unwrap();
         let room = rooms.get_mut(&id).ok_or(axum::http::StatusCode::NOT_FOUND)?;
-        let (seat, is_player) = claim_seat(room, payload.name);
+        let (seat, is_player, token) = claim_seat(room, payload.name);
         let response = JoinResponse {
             seat_index: seat,
             spectator: !is_player,
@@ -614,14 +683,13 @@ async fn get_game(
 
 #[derive(Deserialize)]
 struct WsParams {
-    /// The seat this connection is speaking for, as returned by `join`.
+    /// The seat secret issued by `join`/`create`.
     ///
-    /// This is the connection's whole identity: `should_apply` uses it to
-    /// authorize host-only actions, acting as yourself (`SetName`,
-    /// `SendChat`), and taking your own turn. A wrong seat authorizes nothing
-    /// it shouldn't - it can only cost you the ability to act - and a missing
-    /// one leaves the connection able to observe but not play.
-    seat: Option<usize>,
+    /// The seat itself is *derived* from this rather than sent alongside it:
+    /// a seat number is public, so anything the client asserts about which
+    /// seat it holds is worthless. An absent or unrecognised token connects
+    /// as nobody - able to watch, refused every action.
+    token: Option<String>,
 }
 
 /// Whether a frame should be applied to the room at all.
@@ -732,10 +800,16 @@ async fn ws_handler(
     Query(params): Query<WsParams>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, id, params.seat, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, id, params.token, state))
 }
 
-async fn handle_socket(socket: WebSocket, id: String, seat: Option<usize>, state: AppState) {
+async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, state: AppState) {
+    // Resolve identity once, from the token. Seats never move between members,
+    // so this stays valid for the life of the connection.
+    let seat = {
+        let rooms = state.rooms.read().unwrap();
+        rooms.get(&id).and_then(|room| seat_for_token(room, token.as_deref()))
+    };
     touch(&state.last_activity);
     let rx = {
         let broadcasts = state.broadcasts.read().unwrap();
@@ -848,9 +922,9 @@ mod tests {
         let room = Room {
             id: "TEST01".to_string(),
             members: vec![
-                Member { seat: 0, name: String::new(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
-                Member { seat: 2, name: "Carl".to_string(), host: false },
+                Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Carl".to_string(), host: false, token: "tok2".to_string() },
             ],
             game,
             chat: Vec::new(),
@@ -925,7 +999,7 @@ mod tests {
         // ...alongside a perfectly good one.
         let good = Room {
             id: "GOOD01".to_string(),
-            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true }],
+            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() }],
             game: GameState::new(2),
             chat: Vec::new(),
         };
@@ -950,12 +1024,12 @@ mod tests {
     async fn claim_seat_prefers_players_then_spectators() {
         let mut room = Room {
             id: "SEATS".to_string(),
-            members: vec![Member { seat: 0, name: "Host".to_string(), host: true }],
+            members: vec![Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() }],
             game: GameState::new(2),
             chat: Vec::new(),
         };
 
-        let (bob, bob_player) = claim_seat(&mut room, Some("Bob".to_string()));
+        let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
         assert_eq!(bob, 1);
         assert!(bob_player);
 
@@ -963,7 +1037,7 @@ mod tests {
         assert_eq!(room.game.players[1].name, "Bob");
 
         // Game is full now: the next joiner watches.
-        let (carol, carol_player) = claim_seat(&mut room, Some("Carol".to_string()));
+        let (carol, carol_player, _) = claim_seat(&mut room, Some("Carol".to_string()));
         assert_eq!(carol, 2);
         assert!(!carol_player);
         assert_eq!(room.members.len(), 3);
@@ -976,9 +1050,9 @@ mod tests {
         let mut room = Room {
             id: "RESTART".to_string(),
             members: vec![
-                Member { seat: 0, name: "Host".to_string(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
-                Member { seat: 2, name: "Carol".to_string(), host: false },
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
@@ -1001,7 +1075,7 @@ mod tests {
         let game = GameState::new(2);
         persist_room(&pool, &Room {
             id: "GAME01".to_string(),
-            members: vec![Member { seat: 0, name: String::new(), host: true }],
+            members: vec![Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string() }],
             game,
             chat: Vec::new(),
         })
@@ -1027,17 +1101,19 @@ mod tests {
             chat: Vec::new(),
         };
 
-        let (alice_seat, _) = claim_seat(&mut room, Some("Alice".to_string()));
+        let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
         let alice = room.members.iter().find(|m| m.seat == alice_seat).unwrap();
         assert!(alice.host, "the first-ever member of an empty room is host");
+        assert!(!alice_token.is_empty(), "joining issues a seat token");
+        assert_eq!(seat_for_token(&room, Some(&alice_token)), Some(alice_seat));
 
-        let (bob_seat, _) = claim_seat(&mut room, Some("Bob".to_string()));
+        let (bob_seat, _, _) = claim_seat(&mut room, Some("Bob".to_string()));
         let bob = room.members.iter().find(|m| m.seat == bob_seat).unwrap();
         assert!(!bob.host, "a later joiner is never host, even taking a player seat");
 
         // Fill the remaining player seats and overflow into spectators: still
         // no one but Alice is ever host.
-        let (carol_seat, carol_is_player) = claim_seat(&mut room, Some("Carol".to_string()));
+        let (carol_seat, carol_is_player, _) = claim_seat(&mut room, Some("Carol".to_string()));
         assert!(!carol_is_player, "2-player room: Carol is a spectator");
         let carol = room.members.iter().find(|m| m.seat == carol_seat).unwrap();
         assert!(!carol.host);
@@ -1050,8 +1126,8 @@ mod tests {
         let mut room = Room {
             id: "HOSTPERSIST".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1070,9 +1146,9 @@ mod tests {
         Room {
             id: "SOCK".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
-                Member { seat: 2, name: "Wanda".to_string(), host: false },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string() },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1080,6 +1156,67 @@ mod tests {
     }
 
     // ---- should_apply: the socket's authorization decision ----
+
+    #[test]
+    fn a_seat_is_reached_only_by_its_own_token() {
+        let room = host_room();
+        assert_eq!(seat_for_token(&room, Some("tok0")), Some(0));
+        assert_eq!(seat_for_token(&room, Some("tok1")), Some(1));
+        assert_eq!(seat_for_token(&room, Some("tok2")), Some(2));
+    }
+
+    #[test]
+    fn an_absent_empty_or_wrong_token_is_nobody() {
+        // A seat number is public, so identity has to rest on something that
+        // isn't. Anything unrecognised connects as an observer.
+        let room = host_room();
+        assert_eq!(seat_for_token(&room, None), None);
+        assert_eq!(seat_for_token(&room, Some("")), None, "an empty token matches nothing");
+        assert_eq!(seat_for_token(&room, Some("guess")), None);
+        assert_eq!(seat_for_token(&room, Some("TOK0")), None, "tokens are compared exactly");
+    }
+
+    #[test]
+    fn a_room_predating_tokens_authenticates_nobody() {
+        // Members recovered from a pre-token snapshot have empty tokens. That
+        // must not become a skeleton key that matches an absent token.
+        let mut room = host_room();
+        for m in room.members.iter_mut() {
+            m.token = String::new();
+        }
+        assert_eq!(seat_for_token(&room, Some("")), None);
+        assert_eq!(seat_for_token(&room, None), None);
+        assert_eq!(seat_for_token(&room, Some("tok0")), None);
+    }
+
+    #[test]
+    fn tokens_are_unique_per_seat_and_hard_to_guess() {
+        let mut room = Room {
+            id: "TOK".to_string(),
+            members: vec![],
+            game: GameState::new(4),
+            chat: Vec::new(),
+        };
+        let mut issued = Vec::new();
+        for name in ["a", "b", "c", "d"] {
+            let (_, _, token) = claim_seat(&mut room, Some(name.to_string()));
+            assert!(token.len() >= 32, "a guessable token is no token at all");
+            assert!(!issued.contains(&token), "every seat gets its own");
+            issued.push(token);
+        }
+    }
+
+    #[test]
+    fn the_snapshot_never_carries_a_token() {
+        // RoomSnapshot goes to every client, so a token on it would hand every
+        // seat's secret to everyone - the exact opposite of the point.
+        let room = host_room();
+        let json = serde_json::to_string(&snapshot(&room)).unwrap();
+        for m in &room.members {
+            assert!(!json.contains(&m.token), "token for seat {} leaked", m.seat);
+        }
+        assert!(!json.contains("token"), "no token field at all on the wire");
+    }
 
     #[test]
     fn keepalive_is_never_applied() {
@@ -1148,8 +1285,8 @@ mod tests {
         let mut room = Room {
             id: "REDACT".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1329,9 +1466,9 @@ mod tests {
         Room {
             id: "CHAT".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true },
-                Member { seat: 1, name: "Bob".to_string(), host: false },
-                Member { seat: 2, name: "Wanda".to_string(), host: false }, // spectator
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string() }, // spectator
             ],
             game: GameState::new(2),
             chat: Vec::new(),

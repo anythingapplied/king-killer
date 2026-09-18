@@ -8,13 +8,10 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Correctness / security
 
-- [ ] **Seats are self-asserted.** The socket's `?seat=N` is whatever the
-      client says it is, so the seat-based gates (host, acting as yourself,
-      taking your turn) and per-seat redaction all stop a player's *own* client
-      doing the wrong thing — not someone deliberately connecting as a seat
-      that isn't theirs. Closing it needs a per-seat token issued by `join`,
-      stored on the `Member`, and required by the socket. That would make the
-      redaction below airtight rather than advisory.
+- [ ] **Rooms persisted before seat tokens existed can't be played.** Their
+      members load with an empty token, which authenticates nobody, so everyone
+      connects as an observer and the seats stay held. New rooms are unaffected.
+      Either clear the `games` table on deploy or add a reclaim path.
 - [ ] **Rejected actions are silent.** The handler does `let _ = match &action`,
       so an `Err` is swallowed and the unchanged state is rebroadcast; the
       player sees a click that did nothing. Needs a `ServerMessage::Error`
@@ -36,7 +33,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
       hand position.
 - [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
       before cleanup. (`last_played` is already on the state.)
-- [ ] **New game starts with random player not host everytime**
 
 ### Testing & infra
 
@@ -98,6 +94,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Host gate**: only the room's first-ever member may start a new deal.
 - [x] **`SetName` is authorized against the socket's seat**, not a seat supplied
       in the message body.
+- [x] **Seats are proven, not claimed.** `join`/`create` issue a 32-character
+      secret stored on the `Member`; the socket presents it as `?token=...` and
+      the server *derives* the seat from it. A seat number is public, so the
+      previous `?seat=N` was self-asserted and every seat-based check was
+      advisory. `RoomSnapshot` carries a separate `MemberView` type so the
+      compiler prevents a token ever reaching a client.
 - [x] **Hands and deck order are redacted per seat.** The snapshot used to
       ship every hand and the Tavern order to every client; `get_game` handed
       them to an anonymous GET. Each connection now gets a view narrowed to its
