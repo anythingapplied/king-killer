@@ -79,6 +79,11 @@ export interface RoomSnapshot {
     id: string;
     game: GameState;
     members: RoomMember[];
+    /** The seat this client is connected as, decided by the server from the
+     *  seat token. null for a spectator or an anonymous read. Authoritative:
+     *  a re-deal can move your seat, so this overrides whatever was stored at
+     *  join. Optional for a snapshot from an older server. */
+    you?: number | null;
     /** Optional so a snapshot from a server without chat still type-checks. */
     chat?: ChatMessage[];
 }

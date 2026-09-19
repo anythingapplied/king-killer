@@ -19,13 +19,7 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **New game should default to the host plus the most recently joined
-      players.** Seat *selection* for a re-deal still isn't ordered by join
-      recency - `Member` has no join-order field. (Who goes *first* is now
-      handled; see Done.)
-- [ ] **Hover the play area to see every play so far.** Done for the *current*
-      enemy via `play_log`. Not done across the whole game — `game_log` has the
-      data, it just isn't surfaced that way.
+
 - [ ] **Draw animation**: cards slide from the Tavern deck into their sorted
       hand position.
 - [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
@@ -78,6 +72,16 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Solo Jester** refills to the hand limit, and spending the last one on an
       unpayable hit ends the game instead of softlocking.
 - [x] **Random starting player** for a fresh room's first deal.
+- [x] **A re-deal seats the host plus the most recent arrivals.** `Member`
+      gained `joined_seq`, and a new deal reassigns seats by host-then-recency
+      instead of keeping whoever held the low seats - so someone who joined
+      early and had been spectating no longer keeps a seat ahead of the person
+      who just turned up to play. Seats move, identity doesn't: the token
+      follows the member, and `RoomSnapshot::you` tells each connection its
+      (possibly new) seat, which the client now trusts over the one it stored
+      at join.
+- [x] **The play popover can widen to the whole game**, not just the current
+      enemy - `game_log` already held the data.
 - [x] **A new deal (`NewGame`/`Reset`) starts with the player after whoever
       went first last time**, not the host every time and not re-rolled
       randomly. `GameState::new` always picks randomly, which - especially at

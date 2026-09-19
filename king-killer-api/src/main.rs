@@ -83,6 +83,12 @@ struct Member {
     /// empty token matches nothing, so those members cannot be authenticated.
     #[serde(default)]
     token: String,
+    /// Monotonic per room, in the order members arrived. Used to pick who
+    /// plays when a new deal has fewer seats than the room has people: the
+    /// host, then the most recent arrivals. Seats can't stand in for this,
+    /// since a re-deal reassigns them.
+    #[serde(default)]
+    joined_seq: u64,
 }
 
 /// The public face of a member: everything except the seat's secret.
@@ -199,6 +205,14 @@ struct RoomSnapshot {
     id: String,
     game: GameState,
     members: Vec<MemberView>,
+    /// The receiving connection's own seat, or `None` for a spectator or an
+    /// anonymous reader. Filled in per-connection by [`redact_for`].
+    ///
+    /// Without this the client only knows the seat it was given at join, which
+    /// a re-deal can move - it would keep rendering someone else's position as
+    /// its own. The server already resolves the seat from the token, so this
+    /// just tells the client what the server already decided.
+    you: Option<usize>,
     #[serde(default)]
     chat: Vec<ChatMessage>,
 }
@@ -236,6 +250,7 @@ fn face_down(index: usize) -> Card {
 /// per-seat token issued at join; see todo.md.
 fn redact_for(snapshot: &RoomSnapshot, seat: Option<usize>) -> RoomSnapshot {
     let mut view = snapshot.clone();
+    view.you = seat;
 
     for (i, player) in view.game.players.iter_mut().enumerate() {
         if Some(i) != seat {
@@ -265,6 +280,9 @@ fn snapshot(room: &Room) -> RoomSnapshot {
         id: room.id.clone(),
         game: room.game.clone(),
         members,
+        // Filled in by redact_for, which is the only place that knows who is
+        // being sent to.
+        you: None,
         chat: room.chat.clone(),
     }
 }
@@ -272,8 +290,33 @@ fn snapshot(room: &Room) -> RoomSnapshot {
 /// Deals a brand-new game with `num_players`, seeding each seat's name from the
 /// room roster so returning players keep their identity across restarts.
 /// Members seated past the new player count automatically become spectators.
+/// Reassigns seats so a new deal seats the host plus the most recent arrivals.
+///
+/// A re-deal can have fewer seats than the room has people, and the old
+/// behaviour just kept whoever happened to hold seats `0..player_count` -
+/// so someone who joined early and had been spectating for hours stayed in,
+/// while the person who arrived to play sat out.
+///
+/// Seats move, members don't: identity lives on the token, so a player keeps
+/// their seat *token* and simply learns their new seat number from
+/// `RoomSnapshot::you`.
+fn reassign_seats(room: &mut Room, player_count: usize) {
+    let mut order: Vec<usize> = (0..room.members.len()).collect();
+    order.sort_by_key(|&i| {
+        let m = &room.members[i];
+        // Host first, then newest arrival first. `!host` puts true (the host)
+        // at 0; Reverse makes a higher joined_seq sort earlier.
+        (!m.host, std::cmp::Reverse(m.joined_seq))
+    });
+    for (position, &member_index) in order.iter().enumerate() {
+        room.members[member_index].seat = position;
+    }
+    let _ = player_count; // seats above it are spectators by definition
+}
+
 fn deal_new_game(room: &mut Room, num_players: u32) {
     let player_count = num_players.clamp(1, 4) as usize;
+    reassign_seats(room, player_count);
     let names: Vec<String> = (0..player_count)
         .map(|i| {
             room.members
@@ -310,10 +353,17 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
 /// Claims a seat for a new joiner. Prefers a random free player seat; when the
 /// game is full the joiner watches instead, receiving a monotonic seat at or
 /// above the player count. Returns the seat and whether it is a player seat.
+/// Next arrival number for a room. Members are never removed, so this only
+/// ever grows.
+fn next_joined_seq(room: &Room) -> u64 {
+    room.members.iter().map(|m| m.joined_seq).max().map_or(0, |max| max + 1)
+}
+
 fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
     // Recorded before either branch pushes a Member, so it reflects the room
     // as it was before this join - i.e. whether anyone was here already.
     let is_first_ever_member = room.members.is_empty();
+    let joined_seq = next_joined_seq(room);
     let player_count = room.game.players.len();
     let taken: HashSet<usize> = room.members.iter().map(|m| m.seat).collect();
     let free: Vec<usize> = (0..player_count).filter(|s| !taken.contains(s)).collect();
@@ -325,6 +375,7 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
             name: name.clone().unwrap_or_default(),
             host: is_first_ever_member,
             token: token.clone(),
+            joined_seq,
         });
         if let Some(provided_name) = name {
             if let Some(player) = room.game.players.get_mut(seat) {
@@ -341,6 +392,7 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
             name: name.unwrap_or_default(),
             host: is_first_ever_member,
             token: token.clone(),
+            joined_seq,
         });
         (seat, false, token)
     }
@@ -450,6 +502,9 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     // Predates tokens; nobody can authenticate as these seats.
                     // See todo.md - such a room is effectively read-only.
                     token: String::new(),
+                    // No arrival order was recorded; seat order is the only
+                    // approximation available.
+                    joined_seq: i as u64,
                 })
                 .collect();
             rooms.insert(
@@ -625,6 +680,7 @@ async fn create_game(
         name: game.players[0].name.clone(),
         host: true, // the room's creator is its first-ever member
         token: creator_token.clone(),
+        joined_seq: 0,
     });
 
     let room = Room {
@@ -988,9 +1044,9 @@ mod tests {
         let room = Room {
             id: "TEST01".to_string(),
             members: vec![
-                Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Carl".to_string(), host: false, token: "tok2".to_string() },
+                Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Carl".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
             ],
             game,
             chat: Vec::new(),
@@ -1065,7 +1121,7 @@ mod tests {
         // ...alongside a perfectly good one.
         let good = Room {
             id: "GOOD01".to_string(),
-            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() }],
+            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(2),
             chat: Vec::new(),
         };
@@ -1090,7 +1146,7 @@ mod tests {
     async fn claim_seat_prefers_players_then_spectators() {
         let mut room = Room {
             id: "SEATS".to_string(),
-            members: vec![Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() }],
+            members: vec![Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(2),
             chat: Vec::new(),
         };
@@ -1116,21 +1172,25 @@ mod tests {
         let mut room = Room {
             id: "RESTART".to_string(),
             members: vec![
-                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
         };
 
-        // Shrink to two players: Carol moves to a spectator seat (>1).
+        // Shrink to two players. Seats are reassigned by host-then-recency, so
+        // Carol (the latest arrival) plays and Bob moves to a spectator seat -
+        // this test previously asserted the opposite, back when a re-deal just
+        // kept whoever happened to hold the low seats.
         deal_new_game(&mut room, 2);
         assert_eq!(room.game.players.len(), 2);
         assert_eq!(room.game.players[0].name, "Host");
-        assert_eq!(room.game.players[1].name, "Bob");
-        // Seats above the new player count still belong to the roster.
-        assert!(room.members.iter().any(|m| m.seat == 2 && m.name == "Carol"));
+        assert_eq!(room.game.players[1].name, "Carol");
+        // Nobody is dropped from the roster; the displaced member watches.
+        assert!(room.members.iter().any(|m| m.seat == 2 && m.name == "Bob"));
+        assert_eq!(room.members.len(), 3);
     }
 
     #[tokio::test]
@@ -1138,9 +1198,9 @@ mod tests {
         let mut room = Room {
             id: "ROTATE".to_string(),
             members: vec![
-                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
@@ -1165,9 +1225,9 @@ mod tests {
         let mut room = Room {
             id: "SHRINK".to_string(),
             members: vec![
-                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
@@ -1184,12 +1244,93 @@ mod tests {
     async fn solo_deals_do_not_rotate() {
         let mut room = Room {
             id: "SOLOROT".to_string(),
-            members: vec![Member { seat: 0, name: "Alone".to_string(), host: true, token: "tok0".to_string() }],
+            members: vec![Member { seat: 0, name: "Alone".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(1),
             chat: Vec::new(),
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
+    }
+
+    #[tokio::test]
+    async fn a_smaller_new_deal_seats_the_host_and_the_most_recent_arrivals() {
+        // Four people, re-dealt as a 2-player game. The old behaviour kept
+        // whoever held seats 0 and 1 - so an early joiner who had been
+        // spectating stayed in while the person who just arrived to play
+        // sat out.
+        let mut room = Room {
+            id: "RECENCY".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "t0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Early".to_string(), host: false, token: "t1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Later".to_string(), host: false, token: "t2".to_string(), joined_seq: 2 },
+                Member { seat: 3, name: "Newest".to_string(), host: false, token: "t3".to_string(), joined_seq: 3 },
+            ],
+            game: GameState::new(4),
+            chat: Vec::new(),
+        };
+
+        deal_new_game(&mut room, 2);
+
+        let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
+        assert_eq!(seat_of("Host"), 0, "the host always plays");
+        assert_eq!(seat_of("Newest"), 1, "the most recent arrival takes the other seat");
+        assert!(seat_of("Later") >= 2, "earlier arrivals move to spectator seats");
+        assert!(seat_of("Early") >= 2);
+        assert_eq!(room.game.players.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn reassigning_seats_keeps_every_token_working() {
+        // Seats move; identity doesn't. A player whose seat changed must still
+        // authenticate - on their *new* seat.
+        let mut room = Room {
+            id: "TOKMOVE".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "t0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Early".to_string(), host: false, token: "t1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Newest".to_string(), host: false, token: "t2".to_string(), joined_seq: 2 },
+            ],
+            game: GameState::new(3),
+            chat: Vec::new(),
+        };
+
+        deal_new_game(&mut room, 2);
+
+        assert_eq!(seat_for_token(&room, Some("t0")), Some(0));
+        assert_eq!(seat_for_token(&room, Some("t2")), Some(1), "Newest moved up and its token follows");
+        assert_eq!(seat_for_token(&room, Some("t1")), Some(2), "Early moved down, still authenticates");
+        // Every seat is distinct - a duplicate would let two people act as one.
+        let mut seats: Vec<usize> = room.members.iter().map(|m| m.seat).collect();
+        seats.sort();
+        assert_eq!(seats, vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn the_snapshot_tells_each_connection_which_seat_is_theirs() {
+        // The client can't work this out itself: MemberView carries no token,
+        // and a re-deal can move the seat it was given at join.
+        let room = host_room();
+        let truth = snapshot(&room);
+        assert_eq!(redact_for(&truth, Some(1)).you, Some(1));
+        assert_eq!(redact_for(&truth, Some(2)).you, Some(2));
+        assert_eq!(redact_for(&truth, None).you, None, "an anonymous reader is nobody");
+    }
+
+    #[tokio::test]
+    async fn arrival_order_keeps_increasing_as_people_join() {
+        let mut room = Room {
+            id: "SEQ".to_string(),
+            members: vec![],
+            game: GameState::new(4),
+            chat: Vec::new(),
+        };
+        for _ in 0..4 {
+            claim_seat(&mut room, None);
+        }
+        let mut seqs: Vec<u64> = room.members.iter().map(|m| m.joined_seq).collect();
+        seqs.sort();
+        assert_eq!(seqs, vec![0, 1, 2, 3], "each arrival gets a later number");
     }
 
     #[tokio::test]
@@ -1200,7 +1341,7 @@ mod tests {
         let game = GameState::new(2);
         persist_room(&pool, &Room {
             id: "GAME01".to_string(),
-            members: vec![Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string() }],
+            members: vec![Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game,
             chat: Vec::new(),
         })
@@ -1251,8 +1392,8 @@ mod tests {
         let mut room = Room {
             id: "HOSTPERSIST".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1271,9 +1412,9 @@ mod tests {
         Room {
             id: "SOCK".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string() },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1410,8 +1551,8 @@ mod tests {
         let mut room = Room {
             id: "REDACT".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
             ],
             game: GameState::new(2),
             chat: Vec::new(),
@@ -1592,9 +1733,9 @@ mod tests {
         Room {
             id: "CHAT".to_string(),
             members: vec![
-                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string() },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
-                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string() }, // spectator
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Wanda".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 }, // spectator
             ],
             game: GameState::new(2),
             chat: Vec::new(),

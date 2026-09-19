@@ -356,6 +356,15 @@ export const useGameLogic = () => {
       serverStateRef.current = payload.game;
       setRoster(payload.members);
       setChat(payload.chat ?? []);
+      // The server decides which seat this connection holds (it resolves the
+      // token); a re-deal can move it, so trust this over the seat stored at
+      // join. Guarded so an older server that omits the field doesn't wipe it.
+      if (payload.you !== undefined) {
+        setMyPlayerId(payload.you);
+        if (payload.you !== null) {
+          localStorage.setItem(`seat_${payload.id}`, String(payload.you));
+        }
+      }
       applyServerState(payload.game);
     };
     socket.onmessage = (event) => {

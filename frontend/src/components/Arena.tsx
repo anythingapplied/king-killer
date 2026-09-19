@@ -17,8 +17,19 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
     // Hover on desktop, tap on touch — `play_log` keeps every play against this
     // enemy grouped as it was played, which `played_cards` flattens away.
     const [showPlays, setShowPlays] = useState(false);
-    const playLog = gameState.play_log ?? [];
+    // play_log covers the current enemy; game_log spans the whole castle. Both
+    // are already on the state - this just lets the popover widen its scope
+    // rather than making you open the full log for it.
+    const [wholeGame, setWholeGame] = useState(false);
     const playerLabel = (i: number) => gameState.players[i]?.name || `P${i + 1}`;
+
+    const currentEnemyPlays = gameState.play_log ?? [];
+    // The game log records every event; only the plays and yields belong here,
+    // and they carry the same (player, cards) shape play_log does.
+    const wholeGamePlays = (gameState.game_log ?? [])
+        .filter(e => (e.kind === 'Played' || e.kind === 'Yielded') && e.player !== null)
+        .map(e => ({ player: e.player as number, cards: e.cards }));
+    const playLog = wholeGame ? wholeGamePlays : currentEnemyPlays;
 
     // `position: fixed` + a measured anchor, not `right-full` off the trigger.
     // The trigger sits in a ~48-112px sidebar flush against the screen edge, so
@@ -224,8 +235,14 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                                     className="z-[130] overflow-y-auto bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 text-left"
                                 >
                                     <div className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1.5">
-                                        This enemy — {playLog.length} play{playLog.length === 1 ? '' : 's'}
+                                        {wholeGame ? 'Whole game' : 'This enemy'} — {playLog.length} play{playLog.length === 1 ? '' : 's'}
                                     </div>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); setWholeGame(v => !v); }}
+                                        className="t-micro w-full mb-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full py-1 font-black uppercase tracking-widest text-slate-300"
+                                    >
+                                        {wholeGame ? 'Show this enemy only' : `Show whole game (${wholeGamePlays.length})`}
+                                    </button>
                                     <div className="flex flex-col gap-1.5">
                                         {playLog.slice().reverse().map((rec, i) => (
                                             <div key={playLog.length - 1 - i} className="flex items-center gap-1.5 border-t border-white/5 pt-1.5 first:border-0 first:pt-0">
