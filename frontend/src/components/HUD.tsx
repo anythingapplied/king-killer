@@ -6,7 +6,8 @@ import { spectatorNumber } from '../spectatorLabel';
 
 interface HUDProps {
     gameId: string;
-    myPlayerId: number;
+    /** null when this connection holds no seat (an observer). */
+    myPlayerId: number | null;
     gameState: GameState;
     roster: RoomMember[];
     isSpectator: boolean;
@@ -38,7 +39,7 @@ const HUD: React.FC<HUDProps> = ({
     onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
 }) => {
     const isSolo = gameState.players.length === 1;
-    const me = isSpectator ? undefined : gameState.players[myPlayerId];
+    const me = isSpectator || myPlayerId === null ? undefined : gameState.players[myPlayerId];
     const mustRefreshSolo = isSolo && !!me && me.hand.length === 0 && gameState.solo_jesters > 0;
     const isMyTurn = gameState.current_player_index === myPlayerId;
     // Spectator seats continue the player numbering - the first watcher in a
@@ -57,8 +58,8 @@ const HUD: React.FC<HUDProps> = ({
     const nameCancelledRef = useRef(false);
 
     const fallbackMyName = isSpectator
-        ? `Spectator ${spectatorLabel(myPlayerId)}`
-        : `Player ${myPlayerId + 1}`;
+        ? (myPlayerId === null ? 'Watching' : `Spectator ${spectatorLabel(myPlayerId)}`)
+        : `Player ${(myPlayerId ?? 0) + 1}`;
     const displayMyName = me?.name || roster.find(m => m.seat === myPlayerId)?.name || fallbackMyName;
 
     const startEditName = () => {

@@ -5,6 +5,7 @@ import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
 import { newestSeen, unreadCount } from '../chatUnread';
+import { isWatching } from '../seatState';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
@@ -135,7 +136,7 @@ export const useGameLogic = () => {
   const isMyTurn = localGameState?.current_player_index === myPlayerId;
   const isSolo = localGameState?.players.length === 1;
   // A member seated beyond the active game's player count watches the game.
-  const isSpectator = localGameState !== null && myPlayerId !== null && myPlayerId >= localGameState.players.length;
+  const isSpectator = isWatching(localGameState !== null, myPlayerId, localGameState?.players.length ?? 0);
 
   // Audio can only be started from a user gesture, and the chime fires from a
   // state update — never a gesture. Arm the context on the first interaction

@@ -7,6 +7,7 @@ import ActionFooter from './components/ActionFooter';
 import GameLog from './components/GameLog';
 import Chat from './components/Chat';
 import ActionErrorToast from './components/ActionErrorToast';
+import { canRenderBoard } from './seatState';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -102,7 +103,10 @@ const App: React.FC = () => {
     // `seatedPlayer` is null while the state is still arriving AND whenever the
     // stored seat no longer exists on this table, which used to crash the board
     // on `players[myPlayerId].hand`.
-    if (!localGameState || myPlayerId === null || (!isSpectator && !seatedPlayer)) return (
+    // Split so TypeScript still narrows localGameState for everything below;
+    // a boolean-returning helper can't do that on its own.
+    if (!localGameState
+        || !canRenderBoard(true, myPlayerId, seatedPlayer !== null, localGameState.players.length)) return (
         <div className="board-shell flex flex-col items-center justify-center bg-slate-900 text-white p-4">
             <div className="animate-pulse flex flex-col items-center">
                 <div className="text-6xl mb-6">⚔️</div>

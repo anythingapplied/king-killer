@@ -12,7 +12,8 @@ interface ActionFooterProps {
     isImmuneWarning: boolean;
     phase: TurnPhase;
     players: Player[];
-    myPlayerId: number;
+    /** null when this connection holds no seat; then no option is "(You)". */
+    myPlayerId: number | null;
     onAttackClick: () => void;
     onYieldClick: () => void;
     onChooseNextPlayer: (index: number) => void;

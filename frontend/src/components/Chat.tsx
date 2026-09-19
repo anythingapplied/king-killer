@@ -4,7 +4,8 @@ import Modal from './Modal';
 
 interface ChatProps {
     chat: ChatMessage[];
-    myPlayerId: number;
+    /** null for an observer, who owns none of the messages. */
+    myPlayerId: number | null;
     onSend: (text: string) => void;
     onClose: () => void;
 }

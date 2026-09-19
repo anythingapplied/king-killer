@@ -308,9 +308,26 @@ fn reassign_seats(room: &mut Room, player_count: usize) {
         // at 0; Reverse makes a higher joined_seq sort earlier.
         (!m.host, std::cmp::Reverse(m.joined_seq))
     });
+
+    // Old seat -> new seat, built before anything moves.
+    let mut moved: HashMap<usize, usize> = HashMap::new();
     for (position, &member_index) in order.iter().enumerate() {
+        moved.insert(room.members[member_index].seat, position);
         room.members[member_index].seat = position;
     }
+
+    // Chat outlives a deal, and every message records the seat that sent it.
+    // Leaving those pointing at a seat number whose occupant just changed
+    // would re-attribute old messages to whoever inherited the seat - the
+    // client decides which messages are "yours" by exactly this comparison.
+    // The stored `name` is still the one from send time; only the identity
+    // pointer follows its author.
+    for message in room.chat.iter_mut() {
+        if let Some(&new_seat) = moved.get(&message.seat) {
+            message.seat = new_seat;
+        }
+    }
+
     let _ = player_count; // seats above it are spectators by definition
 }
 
@@ -1387,6 +1404,40 @@ mod tests {
         assert!(seat_of("Later") >= 2, "earlier arrivals move to spectator seats");
         assert!(seat_of("Early") >= 2);
         assert_eq!(room.game.players.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_re_deal_does_not_re_attribute_old_chat_messages() {
+        // Chat outlives a deal and records the sender's seat. When seats move,
+        // an un-remapped message would be credited to whoever inherited the
+        // seat - and the client decides which messages are "yours" by exactly
+        // that comparison, so your opponent's old lines would render as yours.
+        let mut room = Room {
+            id: "CHATSEAT".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "t0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Early".to_string(), host: false, token: "t1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Newest".to_string(), host: false, token: "t2".to_string(), joined_seq: 2 },
+            ],
+            game: GameState::new(3),
+            chat: Vec::new(),
+        };
+        room.push_chat(1, "said by Early");
+        room.push_chat(2, "said by Newest");
+
+        deal_new_game(&mut room, 2);
+
+        // Newest moved 2 -> 1 and Early 1 -> 2; each message follows its author.
+        let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
+        let early = room.chat.iter().find(|m| m.text == "said by Early").unwrap();
+        let newest = room.chat.iter().find(|m| m.text == "said by Newest").unwrap();
+        assert_eq!(early.seat, seat_of("Early"));
+        assert_eq!(newest.seat, seat_of("Newest"));
+        assert_ne!(early.seat, newest.seat, "two authors never collapse onto one seat");
+
+        // The displayed name is still the one captured at send time.
+        assert_eq!(early.name, "Early");
+        assert_eq!(newest.name, "Newest");
     }
 
     #[tokio::test]
