@@ -66,6 +66,25 @@ export const useGameLogic = () => {
   const [reconnecting, setReconnecting] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => isMuted());
   const [chat, setChat] = useState<ChatMessage[]>([]);
+  // The most recent server-side rejection, e.g. "that combo isn't legal" or
+  // "not enough to cover the damage". null once dismissed or timed out.
+  const [actionError, setActionError] = useState<{ id: number; action: string; message: string } | null>(null);
+  const actionErrorIdRef = useRef(0);
+  const actionErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onActionError = useCallback((action: string, message: string) => {
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
+    const id = ++actionErrorIdRef.current;
+    setActionError({ id, action, message });
+    actionErrorTimerRef.current = setTimeout(() => {
+      setActionError(current => (current?.id === id ? null : current));
+    }, 4000);
+  }, []);
+
+  const dismissActionError = useCallback(() => {
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
+    setActionError(null);
+  }, []);
   // Timestamp of the newest message already seen, so the HUD can badge unread
   // ones without the panel being mounted.
   //
@@ -110,6 +129,7 @@ export const useGameLogic = () => {
     effectTimersRef.current = [];
     transitionTimersRef.current.forEach(clearTimeout);
     transitionTimersRef.current = [];
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
   }, []);
 
   const isMyTurn = localGameState?.current_player_index === myPlayerId;
@@ -351,6 +371,11 @@ export const useGameLogic = () => {
         onState((msg as { payload: RoomSnapshot }).payload);
         return;
       }
+      if (msg && typeof msg === 'object' && (msg as { type?: string }).type === 'Error') {
+        const { action: failedAction, message } = (msg as { payload: { action: string; message: string } }).payload;
+        onActionError(failedAction, message);
+        return;
+      }
       // Untagged frame: only accept it if it actually looks like a snapshot,
       // rather than casting whatever arrived straight into state.
       if (msg && typeof msg === 'object' && 'game' in msg && 'members' in msg) {
@@ -366,7 +391,7 @@ export const useGameLogic = () => {
       backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
       scheduleReconnect();
     };
-  }, [gameId, scheduleReconnect, applyServerState]);
+  }, [gameId, scheduleReconnect, applyServerState, onActionError]);
 
   useEffect(() => {
     connectRef.current = connectWebSocket;
@@ -704,7 +729,7 @@ export const useGameLogic = () => {
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
-    chat, sendChat,
+    chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,

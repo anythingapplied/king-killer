@@ -6,6 +6,7 @@ import HandArea from './components/HandArea';
 import ActionFooter from './components/ActionFooter';
 import GameLog from './components/GameLog';
 import Chat from './components/Chat';
+import ActionErrorToast from './components/ActionErrorToast';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -34,7 +35,7 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead,
+        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
@@ -191,6 +192,8 @@ const App: React.FC = () => {
                     </>
                 )}
             </div>
+
+            <ActionErrorToast error={actionError} onDismiss={dismissActionError} />
 
             {/* Defeated enemy flying to its pile */}
             {defeatFlight && (

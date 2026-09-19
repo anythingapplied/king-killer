@@ -12,12 +12,10 @@ open are now closed, and a couple that read as closed turned out to be partial.
       members load with an empty token, which authenticates nobody, so everyone
       connects as an observer and the seats stay held. New rooms are unaffected.
       Either clear the `games` table on deploy or add a reclaim path.
-- [ ] **Rejected actions are silent.** The handler does `let _ = match &action`,
-      so an `Err` is swallowed and the unchanged state is rebroadcast; the
-      player sees a click that did nothing. Needs a `ServerMessage::Error`
-      variant and a toast. Most rejections are now prevented client-side, so
-      this is the edge-case path: races, replayed buffers, and any future
-      client/server rule divergence.
+- [ ] **`create_game`/`join_game_seat` don't report errors to the caller
+      either** — only the WebSocket path got `ServerMessage::Error`. A failed
+      REST call already returns a non-2xx status, which is a real signal, but
+      the body carries no explanation.
 
 ### Gameplay / UX
 
@@ -100,6 +98,15 @@ open are now closed, and a couple that read as closed turned out to be partial.
       previous `?seat=N` was self-asserted and every seat-based check was
       advisory. `RoomSnapshot` carries a separate `MemberView` type so the
       compiler prevents a token ever reaching a client.
+- [x] **Rejected actions reach the player who sent them.** `apply_action`'s
+      `Err` used to be swallowed with `let _ =`, leaving a click that did
+      nothing with no explanation — most now-prevented client-side, but races,
+      a stale selection, or a rule drifting between client and server still
+      hit this path. `ServerMessage::Error` is sent only to the connection that
+      triggered it (a private `mpsc` channel merged into that connection's send
+      loop) rather than broadcast, since announcing someone's wrong guess to
+      the whole table would be worse than the silence it replaces. Shown as a
+      brief, auto-dismissing toast.
 - [x] **Hands and deck order are redacted per seat.** The snapshot used to
       ship every hand and the Tavern order to every client; `get_game` handed
       them to an anonymous GET. Each connection now gets a view narrowed to its

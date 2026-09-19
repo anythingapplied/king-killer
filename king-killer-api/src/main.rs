@@ -44,7 +44,7 @@ use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use futures::{SinkExt, StreamExt};
 use tower_http::cors::{Any, CorsLayer};
 use rand::seq::IndexedRandom;
@@ -578,6 +578,11 @@ enum GameAction {
 #[serde(tag = "type", content = "payload")]
 enum ServerMessage {
     State(RoomSnapshot),
+    /// Sent only to the connection whose action was rejected — never
+    /// broadcast, so a refused action isn't announced to the whole table.
+    /// Carries the `Err` string `apply_action` returns; the outer field names
+    /// the action that failed, since the client can have several pending.
+    Error { action: &'static str, message: String },
 }
 
 async fn create_game(
@@ -822,6 +827,12 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
 
     let (mut sender, mut receiver) = socket.split();
 
+    // Errors are this connection's alone, so they need a path the shared
+    // broadcast channel can't provide - it fans one message out to every seat,
+    // and a rejection announced to the whole table would out a bad guess, a
+    // stale click, or a lost race to everyone else at it.
+    let (err_tx, mut err_rx) = mpsc::unbounded_channel::<ServerMessage>();
+
     // Push the current room immediately so a newly-connected client renders.
     let initial = {
         let rooms = state.rooms.read().unwrap();
@@ -836,19 +847,44 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
 
     let mut rx = rx;
     let mut send_task = tokio::spawn(async move {
-        while let Ok(message) = rx.recv().await {
-            // The channel carries one unredacted snapshot; each connection
-            // narrows it to what its own seat may see before serializing.
-            let ServerMessage::State(snap) = &message;
-            let msg = serde_json::to_string(&ServerMessage::State(redact_for(snap, seat))).unwrap();
-            if let Err(_) = sender.send(Message::Text(msg.into())).await {
+        loop {
+            // A private error and a room update can arrive at the same instant
+            // (a rejected action still triggers no broadcast, but an unrelated
+            // action from another player might land right after); select! picks
+            // whichever is ready without starving the other.
+            let outgoing = tokio::select! {
+                biased;
+                Some(err) = err_rx.recv() => Some(err),
+                room_state = rx.recv() => match room_state {
+                    Ok(ServerMessage::State(snap)) => {
+                        // The channel carries one unredacted snapshot; each
+                        // connection narrows it before serializing.
+                        Some(ServerMessage::State(redact_for(&snap, seat)))
+                    }
+                    Ok(ServerMessage::Error { .. }) => None, // never broadcast; unreachable
+                    // Fell behind and missed some updates - not fatal. The very
+                    // next State message carries the room's current shape in
+                    // full, so recovery is automatic; only Closed ends the
+                    // connection. A pattern of Ok(_)/Err(Lagged)/else here
+                    // previously broke the socket on this, since neither branch
+                    // matched and it fell to the else arm below.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => None,
+                },
+                else => None,
+            };
+            let Some(outgoing) = outgoing else { break };
+            let msg = serde_json::to_string(&outgoing).unwrap();
+            if sender.send(Message::Text(msg.into())).await.is_err() {
                 break;
             }
         }
     });
 
     let state_recv = state.clone();
+    let recv_err_tx = err_tx.clone();
     let mut recv_task = tokio::spawn(async move {
+        let err_tx = recv_err_tx;
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(action) = serde_json::from_str::<GameAction>(&text) {
                 // Authorization and dispatch both live in pure functions above,
@@ -858,21 +894,37 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                     should_apply(&action, seat, rooms.get(&id))
                 };
                 if !authorized {
+                    // Distinct from a rejection inside apply_action: this is a
+                    // permission the player was never going to have (someone
+                    // else's turn, a non-host trying to redeal), not a mistake
+                    // in a legal attempt, so it's left silent rather than
+                    // narrating what the UI already hides or disables.
                     continue;
                 }
 
-                let action_type = action_type(&action);
+                let type_label = action_type(&action);
 
-                let room = {
+                let (room, result) = {
                     let mut rooms = state_recv.rooms.write().unwrap();
-                    rooms.get_mut(&id).map(|room| {
-                        let _ = apply_action(room, &action, seat);
-                        room.clone()
-                    })
+                    match rooms.get_mut(&id) {
+                        Some(room) => {
+                            let result = apply_action(room, &action, seat);
+                            (Some(room.clone()), result)
+                        }
+                        None => (None, Err("Room no longer exists".to_string())),
+                    }
                 };
 
+                if let Err(message) = result {
+                    // The player attempted something legal-looking that the
+                    // rules engine refused - e.g. a combo that isn't valid, an
+                    // insufficient discard. Reported only to them: broadcasting
+                    // it would announce a wrong guess to the whole table.
+                    let _ = err_tx.send(ServerMessage::Error { action: type_label, message });
+                }
+
                 if let Some(room) = room {
-                    record_history(&state_recv.db, &id, action_type, &action, &room.game).await;
+                    record_history(&state_recv.db, &id, type_label, &action, &room.game).await;
                     persist_room(&state_recv.db, &room).await;
 
                     let broadcasts = state_recv.broadcasts.read().unwrap();
@@ -1452,8 +1504,9 @@ mod tests {
 
     #[test]
     fn an_illegal_play_reports_an_error_and_leaves_the_game_alone() {
-        // The caller discards this Result today, but it is returned rather than
-        // swallowed so the planned ServerMessage::Error has something to send.
+        // apply_action's Result reaches the player as ServerMessage::Error,
+        // sent privately rather than broadcast (see should_apply's caller in
+        // handle_socket).
         let mut room = host_room();
         let before = room.game.players[room.game.current_player_index].hand.clone();
         let err = apply_action(&mut room, &GameAction::PlayCards { indices: vec![99] }, Some(0));
