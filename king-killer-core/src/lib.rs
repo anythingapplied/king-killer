@@ -567,7 +567,7 @@ impl GameState {
 
         let played_cards = take_cards(&mut player.hand, &sorted_indices);
 
-        if !self.is_valid_combo(&played_cards) {
+        if !Self::is_valid_combo(&played_cards) {
             let player = &mut self.players[self.current_player_index];
             restore_cards(&mut player.hand, &sorted_indices, played_cards);
             return Err("Invalid card combination".to_string());
@@ -624,7 +624,7 @@ impl GameState {
             return Ok(());
         }
 
-        let attack_value = self.calculate_attack_value(&played_cards);
+        let attack_value = Self::calculate_attack_value(&played_cards);
         let suits = self.get_active_suits(&played_cards);
 
         self.last_played = Some(played_cards.clone());
@@ -846,7 +846,13 @@ impl GameState {
         self.check_turn_playable();
     }
 
-    fn is_valid_combo(&self, cards: &[Card]) -> bool {
+    /// Whether `cards` form a legal play.
+    ///
+    /// Public and free of `self` because it is a pure question about cards,
+    /// and because `frontend/src/gameLogic.ts` re-implements it to grey out
+    /// illegal selections — the two are checked against a shared fixture in
+    /// `shared/rule-fixtures.json`, which needs to call this directly.
+    pub fn is_valid_combo(cards: &[Card]) -> bool {
         if cards.len() == 1 {
             return true;
         }
@@ -874,7 +880,9 @@ impl GameState {
         false
     }
 
-    fn calculate_attack_value(&self, cards: &[Card]) -> u32 {
+    /// Total attack value of a play, before suit powers. Mirrored in
+    /// `gameLogic.ts` and covered by the shared fixture.
+    pub fn calculate_attack_value(cards: &[Card]) -> u32 {
         cards.iter().map(|c| c.attack_value()).sum()
     }
 

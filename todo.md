@@ -19,7 +19,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-
 - [ ] **Draw animation**: cards slide from the Tavern deck into their sorted
       hand position.
 - [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
@@ -37,12 +36,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [ ] **Background-tab alert on mobile.** iOS suspends audio for backgrounded
       tabs, so the turn chime is inaudible there. The tab-title flash only helps
       on desktop; the Notifications API is the only thing that works unfocused.
-- [ ] **Shared rule fixtures.** `frontend/src/gameLogic.ts` re-implements
-      `is_valid_combo` / `attack_value` / clubs-doubling in TypeScript so the UI
-      can grey out illegal cards. They agree today, and both files now warn
-      about each other, but nothing enforces it — and because the server rejects
-      silently, a divergence shows up as a button that does nothing. A shared
-      table of cases exercised from both suites would close it.
 
 ## Done
 
@@ -182,6 +175,14 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Flaky tests fixed**: several assumed player 0 starts, which stopped
       being true once the starting player became random, and one drew the immune
       Jack of Diamonds about one run in four.
+- [x] **Shared rule fixtures.** `shared/rule-fixtures.json` holds 32 cases -
+      attack values, combo legality, clubs doubling - read by *both*
+      `king-killer-core/tests/shared_rules.rs` and
+      `frontend/unit/sharedRules.test.ts`. The TypeScript mirror of the rules
+      can no longer drift from the engine without a test failing (verified by
+      deliberately breaking one side). `is_valid_combo` and
+      `calculate_attack_value` became public associated functions to make this
+      possible - both took `&self` and never used it.
 - [x] **README** plus module docs on both crates, covering the invariants that
       aren't visible from the code: `RULES_VERSION`, `Room` vs `GameState`
       lifetimes, the single `state_json` column, idle shutdown, and identity

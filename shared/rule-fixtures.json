@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "Shared rule cases, exercised by BOTH test suites:",
+    "  king-killer-core/tests/shared_rules.rs   (GameState::is_valid_combo, Card::attack_value, GameState::calculate_attack_value)",
+    "  frontend/unit/sharedRules.test.ts     (isSelectionValid, getAttackValue, calculateBlowDamage)",
+    "",
+    "The frontend re-implements these rules so the UI can grey out illegal",
+    "cards before anything is sent. The server is authoritative and rejects",
+    "silently, so a divergence between the two shows up as a button that does",
+    "nothing rather than an error. Adding a case here forces both sides to",
+    "agree about it.",
+    "",
+    "Cards use the wire shape both languages already deserialize: suit is a",
+    "name or null (Joker), rank is a name or {\"Number\": n}. Ids are assigned",
+    "by the test, since they carry no rule meaning."
+  ],
+
+  "attackValues": [
+    { "why": "Ace is 1, not high", "card": { "suit": "Hearts", "rank": "Ace" }, "expected": 1 },
+    { "why": "number cards are face value", "card": { "suit": "Spades", "rank": { "Number": 2 } }, "expected": 2 },
+    { "why": "", "card": { "suit": "Clubs", "rank": { "Number": 7 } }, "expected": 7 },
+    { "why": "", "card": { "suit": "Diamonds", "rank": { "Number": 10 } }, "expected": 10 },
+    { "why": "Jack is 10, same as a ten", "card": { "suit": "Hearts", "rank": "Jack" }, "expected": 10 },
+    { "why": "", "card": { "suit": "Hearts", "rank": "Queen" }, "expected": 15 },
+    { "why": "", "card": { "suit": "Hearts", "rank": "King" }, "expected": 20 },
+    { "why": "the Jester deals no damage", "card": { "suit": null, "rank": "Joker" }, "expected": 0 }
+  ],
+
+  "combos": [
+    { "why": "any single card is playable", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 5 } } ] },
+    { "why": "a single face card is playable", "valid": true,
+      "cards": [ { "suit": "Spades", "rank": "King" } ] },
+    { "why": "the Jester is played alone", "valid": true,
+      "cards": [ { "suit": null, "rank": "Joker" } ] },
+
+    { "why": "a set of two equal numbers totalling <= 10", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 5 } }, { "suit": "Spades", "rank": { "Number": 5 } } ] },
+    { "why": "a set of three totalling <= 10", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 3 } }, { "suit": "Spades", "rank": { "Number": 3 } }, { "suit": "Clubs", "rank": { "Number": 3 } } ] },
+    { "why": "a set of four totalling exactly 8", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 2 } }, { "suit": "Spades", "rank": { "Number": 2 } }, { "suit": "Clubs", "rank": { "Number": 2 } }, { "suit": "Diamonds", "rank": { "Number": 2 } } ] },
+
+    { "why": "a set over 10 is not allowed", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 6 } }, { "suit": "Spades", "rank": { "Number": 6 } } ] },
+    { "why": "two tens are 20, over the limit", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 10 } }, { "suit": "Spades", "rank": { "Number": 10 } } ] },
+    { "why": "face cards can never form a set", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": "Jack" }, { "suit": "Spades", "rank": "Jack" } ] },
+    { "why": "mismatched ranks are not a set", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 4 } }, { "suit": "Spades", "rank": { "Number": 5 } } ] },
+    { "why": "a set of five is too many", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 2 } }, { "suit": "Spades", "rank": { "Number": 2 } }, { "suit": "Clubs", "rank": { "Number": 2 } }, { "suit": "Diamonds", "rank": { "Number": 2 } }, { "suit": "Hearts", "rank": { "Number": 2 } } ] },
+
+    { "why": "Animal Companion: an Ace pairs with any other card", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": "Ace" }, { "suit": "Spades", "rank": "King" } ] },
+    { "why": "an Ace pairs with a number card", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": "Ace" }, { "suit": "Spades", "rank": { "Number": 9 } } ] },
+    { "why": "two Aces are a legal pair", "valid": true,
+      "cards": [ { "suit": "Hearts", "rank": "Ace" }, { "suit": "Spades", "rank": "Ace" } ] },
+    { "why": "an Ace may not pair with the Jester", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": "Ace" }, { "suit": null, "rank": "Joker" } ] },
+    { "why": "three Aces exceed the pairing rule", "valid": false,
+      "cards": [ { "suit": "Hearts", "rank": "Ace" }, { "suit": "Spades", "rank": "Ace" }, { "suit": "Clubs", "rank": "Ace" } ] },
+
+    { "why": "the Jester is never played alongside another card", "valid": false,
+      "cards": [ { "suit": null, "rank": "Joker" }, { "suit": "Hearts", "rank": { "Number": 5 } } ] },
+    { "why": "two Jesters are not a set", "valid": false,
+      "cards": [ { "suit": null, "rank": "Joker" }, { "suit": null, "rank": "Joker" } ] }
+  ],
+
+  "damage": [
+    { "why": "plain total, no clubs", "expected": 9, "enemySuit": "Hearts", "jesterActive": false,
+      "cards": [ { "suit": "Hearts", "rank": { "Number": 9 } } ] },
+    { "why": "clubs double the whole play", "expected": 18, "enemySuit": "Hearts", "jesterActive": false,
+      "cards": [ { "suit": "Clubs", "rank": { "Number": 9 } } ] },
+    { "why": "one club doubles the combined total, not just its own card", "expected": 16, "enemySuit": "Hearts", "jesterActive": false,
+      "cards": [ { "suit": "Clubs", "rank": { "Number": 5 } }, { "suit": "Hearts", "rank": { "Number": 3 } } ] },
+    { "why": "a clubs enemy is immune, so no doubling", "expected": 9, "enemySuit": "Clubs", "jesterActive": false,
+      "cards": [ { "suit": "Clubs", "rank": { "Number": 9 } } ] },
+    { "why": "a Jester clears the immunity, so clubs double again", "expected": 18, "enemySuit": "Clubs", "jesterActive": true,
+      "cards": [ { "suit": "Clubs", "rank": { "Number": 9 } } ] }
+  ]
+}
