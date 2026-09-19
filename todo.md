@@ -20,10 +20,9 @@ open are now closed, and a couple that read as closed turned out to be partial.
 ### Gameplay / UX
 
 - [ ] **New game should default to the host plus the most recently joined
-      players.** Starting a new deal with a different player count works, but
-      seat selection isn't ordered by join recency. `Member` has no join-order
-      field yet; `host` was added for the host gate and the same approach would
-      work here.
+      players.** Seat *selection* for a re-deal still isn't ordered by join
+      recency - `Member` has no join-order field. (Who goes *first* is now
+      handled; see Done.)
 - [ ] **Hover the play area to see every play so far.** Done for the *current*
       enemy via `play_log`. Not done across the whole game — `game_log` has the
       data, it just isn't surfaced that way.
@@ -78,7 +77,14 @@ open are now closed, and a couple that read as closed turned out to be partial.
       at a full table whose teammates have all just yielded.
 - [x] **Solo Jester** refills to the hand limit, and spending the last one on an
       unpayable hit ends the game instead of softlocking.
-- [x] **Random starting player**.
+- [x] **Random starting player** for a fresh room's first deal.
+- [x] **A new deal (`NewGame`/`Reset`) starts with the player after whoever
+      went first last time**, not the host every time and not re-rolled
+      randomly. `GameState::new` always picks randomly, which - especially at
+      a small table - lands on the same seat often enough to read as
+      favoritism; `deal_new_game` now overrides it with an explicit rotation.
+      Wraps around the table, including when it shrank past the previous
+      starter's seat. Solo doesn't rotate (nothing to rotate to).
 - [x] **Grouped play log** (`play_log`) and **whole-game log** (`game_log`,
       capped at 200 entries).
 - [x] **A yield is recorded as a play**, so the board shows "Yield" instead of

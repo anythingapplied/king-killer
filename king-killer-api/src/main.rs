@@ -284,7 +284,21 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
         })
         .collect();
 
+    // GameState::new() picks a random starting player every time, which
+    // sends the same seat first often enough to read as favoritism (usually
+    // seat 0 - the host - since that is the seat people notice). A new deal
+    // instead rotates from whoever went first last game, so it visibly
+    // advances around the table.
+    //
+    // Solo has no rotation (there's only one seat). The modulo below is
+    // enough on its own if the table shrank past the previous starter's
+    // seat - no explicit fallback needed, since "next seat after N" is
+    // always in range for whatever the new player_count is.
+    let previous_starter = room.game.current_player_index;
     let mut game = GameState::new(num_players.clamp(1, 4));
+    if player_count > 1 {
+        game.current_player_index = (previous_starter + 1) % player_count;
+    }
     for (i, name) in names.into_iter().enumerate() {
         if let Some(p) = game.players.get_mut(i) {
             p.name = name;
@@ -1117,6 +1131,65 @@ mod tests {
         assert_eq!(room.game.players[1].name, "Bob");
         // Seats above the new player count still belong to the roster.
         assert!(room.members.iter().any(|m| m.seat == 2 && m.name == "Carol"));
+    }
+
+    #[tokio::test]
+    async fn a_new_deal_starts_with_the_player_after_whoever_went_first_last_time() {
+        let mut room = Room {
+            id: "ROTATE".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
+            ],
+            game: GameState::new(3),
+            chat: Vec::new(),
+        };
+        room.game.current_player_index = 1; // Bob went first last time
+
+        deal_new_game(&mut room, 3);
+        assert_eq!(room.game.current_player_index, 2, "Carol follows Bob");
+
+        room.game.current_player_index = 2; // wrap around
+        deal_new_game(&mut room, 3);
+        assert_eq!(room.game.current_player_index, 0, "wraps back to the host");
+    }
+
+    #[tokio::test]
+    async fn rotation_stays_in_range_if_the_table_shrank_past_the_last_starter() {
+        // The modulo in deal_new_game means "the next seat after the previous
+        // starter" is always well-defined in the *new* table, even when that
+        // exact seat no longer exists - (2 + 1) % 2 is 1, not an out-of-range
+        // 3. Nothing needs an explicit fallback; this pins that the formula
+        // alone is enough.
+        let mut room = Room {
+            id: "SHRINK".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string() },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string() },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string() },
+            ],
+            game: GameState::new(3),
+            chat: Vec::new(),
+        };
+        room.game.current_player_index = 2; // Carol went first
+
+        deal_new_game(&mut room, 2); // Carol's own seat no longer exists
+
+        assert_eq!(room.game.current_player_index, 1, "wraps within the new, smaller table");
+        assert!(room.game.current_player_index < room.game.players.len());
+    }
+
+    #[tokio::test]
+    async fn solo_deals_do_not_rotate() {
+        let mut room = Room {
+            id: "SOLOROT".to_string(),
+            members: vec![Member { seat: 0, name: "Alone".to_string(), host: true, token: "tok0".to_string() }],
+            game: GameState::new(1),
+            chat: Vec::new(),
+        };
+        deal_new_game(&mut room, 1);
+        assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
     }
 
     #[tokio::test]
