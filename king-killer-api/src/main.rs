@@ -1713,6 +1713,21 @@ mod tests {
     }
 
     #[test]
+    fn the_jester_player_may_choose_any_seat_including_their_own() {
+        // "[rules wording removed]" - any
+        // includes themselves. should_apply only checks that the chooser is
+        // the current player; it does not, and must not, care which index
+        // they picked - that legality lives in choose_next_player itself.
+        let room = host_room();
+        for target in 0..room.members.len() {
+            assert!(
+                should_apply(&GameAction::ChooseNextPlayer { index: target }, Some(0), Some(&room)),
+                "seat 0 choosing seat {target} (self-choice included) must be allowed through the gate"
+            );
+        }
+    }
+
+    #[test]
     fn the_gate_follows_the_turn_as_it_moves() {
         let mut room = host_room();
         room.game.current_player_index = 0;

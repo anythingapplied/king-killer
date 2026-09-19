@@ -691,3 +691,51 @@ fn choosing_an_empty_handed_player_is_not_a_loss_while_they_can_still_yield() {
     assert_eq!(state.current_player_index, 1);
     assert_eq!(state.status, GameStatus::InProgress, "seat 1 can still yield");
 }
+
+#[test]
+fn jester_player_can_choose_themself_in_a_four_player_game() {
+    /* End-to-end: seat 2 plays the Jester and picks seat 2 - back to
+       themselves - and the turn genuinely stays with them, not merely
+       "would have been allowed". */
+    let mut state = GameState::new(4);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::King, 990)));
+    state.current_player_index = 2;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.players[2].hand = vec![Card::joker(991), Card::new(Suit::Spades, Rank::Number(5), 992)];
+
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+    assert_eq!(state.current_player_index, 2, "still the Jester player's turn while they decide");
+
+    state.choose_next_player(2).unwrap();
+
+    assert_eq!(state.current_player_index, 2, "chose to keep it");
+    assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+    /* And the game genuinely continues from there - it is seat 2's turn to
+       act, not merely a number that says so: they hold the only remaining
+       card and playing it must succeed rather than being rejected as
+       out-of-turn. */
+    assert_eq!(state.players[2].hand.len(), 1);
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.players[2].hand.len(), 0, "the play was accepted");
+}
+
+#[test]
+fn jester_player_can_hand_the_turn_to_any_other_seat() {
+    let mut state = GameState::new(4);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::King, 993)));
+    state.current_player_index = 0;
+    state.phase = TurnPhase::AwaitingPlay;
+    state.players[0].hand = vec![Card::joker(994)];
+
+    state.play_cards(vec![0]).unwrap();
+    assert_eq!(state.phase, TurnPhase::AwaitingNextPlayer);
+
+    for target in [1usize, 2, 3, 0] {
+        state.current_player_index = 0;
+        state.phase = TurnPhase::AwaitingNextPlayer;
+        state.choose_next_player(target).unwrap();
+        assert_eq!(state.current_player_index, target);
+        assert_eq!(state.phase, TurnPhase::AwaitingPlay);
+    }
+}

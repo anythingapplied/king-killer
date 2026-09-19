@@ -168,7 +168,7 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Tests & docs
 
-- [x] Rust: 35 rules-engine tests + 3 shared-fixture tests; 54 server tests
+- [x] Rust: 37 rules-engine tests + 3 shared-fixture tests; 55 server tests
       covering persistence, seats, host gating, `SetName` authorization, chat,
       startup recovery, seat reassignment, REST error responses, and the socket
       handler's authorization/dispatch decisions.
