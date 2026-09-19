@@ -519,8 +519,9 @@ export const useGameLogic = () => {
     });
     if (!res.ok) {
       // Without this the app set gameId to undefined and bounced back to the
-      // menu with no explanation.
-      alert('Could not start a game. Please try again.');
+      // menu with no explanation. The server now says why (bad player count,
+      // for instance); fall back to a generic message if it didn't.
+      alert(await readApiErrorMessage(res, 'Could not start a game. Please try again.'));
       return;
     }
     const data = await res.json();
@@ -563,7 +564,7 @@ export const useGameLogic = () => {
     try {
       const res = await fetch(`${API_BASE}/api/game/${id}`);
       if (!res.ok) {
-        alert("Game not found");
+        alert(await readApiErrorMessage(res, 'Game not found.'));
         return;
       }
       const snap = await res.json() as RoomSnapshot;
@@ -603,7 +604,7 @@ export const useGameLogic = () => {
         if (data.token) localStorage.setItem(`token_${id}`, data.token);
         setUrlGameId(id, push);
       } else {
-        alert("Could not join the game. Please try again.");
+        alert(await readApiErrorMessage(joinRes, 'Could not join the game. Please try again.'));
       }
     } finally {
       joiningRef.current.delete(id);
@@ -645,6 +646,19 @@ export const useGameLogic = () => {
     if (!trimmed) return;
     localStorage.setItem('kingkiller_player_name', trimmed);
     if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
+  };
+
+  /** Reads the `{ message }` body `ApiError` sends; falls back for anything
+   *  that isn't shaped that way - an older server, a proxy's own error page,
+   *  or a response with no body at all. */
+  const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+    try {
+      const body = await res.json();
+      if (body && typeof body.message === 'string' && body.message) return body.message;
+    } catch {
+      // Not JSON, or no body - fall through.
+    }
+    return fallback;
   };
 
   const sendChat = (text: string) => {

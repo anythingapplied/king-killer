@@ -643,6 +643,27 @@ enum GameAction {
     SendChat { text: String },
 }
 
+/// Error body for a failed REST call, so a non-2xx status carries the same
+/// kind of explanation `ServerMessage::Error` already gives on the socket -
+/// the reason a request was refused, not just that it was.
+#[derive(Serialize)]
+struct ApiError {
+    message: String,
+}
+
+impl ApiError {
+    fn new(message: impl Into<String>) -> Self {
+        ApiError { message: message.into() }
+    }
+}
+
+/// (status, body) - the ergonomic axum return shape for a REST error.
+type ApiErrorResponse = (axum::http::StatusCode, Json<ApiError>);
+
+fn api_error(status: axum::http::StatusCode, message: impl Into<String>) -> ApiErrorResponse {
+    (status, Json(ApiError::new(message)))
+}
+
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", content = "payload")]
 enum ServerMessage {
@@ -657,7 +678,14 @@ enum ServerMessage {
 async fn create_game(
     State(state): State<AppState>,
     Json(payload): Json<CreateGameRequest>,
-) -> impl IntoResponse {
+) -> Result<Json<GameResponse>, ApiErrorResponse> {
+    if !(1..=4).contains(&payload.num_players) {
+        return Err(api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("num_players must be 1-4, got {}", payload.num_players),
+        ));
+    }
+
     touch(&state.last_activity);
     let mut id = generate_game_code();
     {
@@ -667,7 +695,8 @@ async fn create_game(
         }
     }
 
-    let mut game = GameState::new(payload.num_players.clamp(1, 4));
+    // Already validated above; num_players is known to be 1-4 here.
+    let mut game = GameState::new(payload.num_players);
     let mut members = Vec::new();
     if let Some(name) = &payload.player_name {
         if let Some(player) = game.players.first_mut() {
@@ -696,11 +725,11 @@ async fn create_game(
     state.broadcasts.write().unwrap().insert(id.clone(), tx);
 
     // Seat 0 is the creator's, assigned here rather than claimed by them.
-    Json(GameResponse {
+    Ok(Json(GameResponse {
         id,
         state: redact_for(&snapshot(&room), Some(0)),
         token: creator_token,
-    })
+    }))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -723,10 +752,15 @@ async fn join_game_seat(
     Path(id): Path<String>,
     State(state): State<AppState>,
     Json(payload): Json<JoinRequest>,
-) -> Result<Json<JoinResponse>, axum::http::StatusCode> {
+) -> Result<Json<JoinResponse>, ApiErrorResponse> {
     let response = {
         let mut rooms = state.rooms.write().unwrap();
-        let room = rooms.get_mut(&id).ok_or(axum::http::StatusCode::NOT_FOUND)?;
+        let room = rooms.get_mut(&id).ok_or_else(|| {
+            api_error(
+                axum::http::StatusCode::NOT_FOUND,
+                format!("No game with code {id}"),
+            )
+        })?;
         let (seat, is_player, token) = claim_seat(room, payload.name);
         let response = JoinResponse {
             seat_index: seat,
@@ -743,7 +777,7 @@ async fn join_game_seat(
 async fn get_game(
     Path(id): Path<String>,
     State(state): State<AppState>,
-) -> Result<Json<RoomSnapshot>, axum::http::StatusCode> {
+) -> Result<Json<RoomSnapshot>, ApiErrorResponse> {
     let rooms = state.rooms.read().unwrap();
     if let Some(room) = rooms.get(&id) {
         touch(&state.last_activity);
@@ -752,7 +786,10 @@ async fn get_game(
         // socket a moment later, redacted for their seat.
         Ok(Json(redact_for(&snapshot(room), None)))
     } else {
-        Err(axum::http::StatusCode::NOT_FOUND)
+        Err(api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No game with code {id}"),
+        ))
     }
 }
 
@@ -1252,6 +1289,78 @@ mod tests {
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
     }
 
+    /// A minimal AppState for calling handlers directly, without a router.
+    async fn test_state() -> AppState {
+        let db = test_pool().await;
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        AppState {
+            rooms: Arc::new(RwLock::new(HashMap::new())),
+            broadcasts: Arc::new(RwLock::new(HashMap::new())),
+            last_activity: Arc::new(RwLock::new(Instant::now())),
+            db,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_game_rejects_a_bad_player_count_with_a_reason() {
+        let state = test_state().await;
+        let payload = CreateGameRequest { num_players: 0, player_name: None };
+        let err = create_game(State(state), Json(payload)).await.unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.0.message.contains('0'), "the offending value appears in the message");
+    }
+
+    #[tokio::test]
+    async fn create_game_rejects_five_players_too() {
+        let state = test_state().await;
+        let payload = CreateGameRequest { num_players: 5, player_name: None };
+        let err = create_game(State(state), Json(payload)).await.unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_game_succeeds_for_every_valid_player_count() {
+        for n in 1..=4u32 {
+            let state = test_state().await;
+            let payload = CreateGameRequest { num_players: n, player_name: None };
+            let response = create_game(State(state), Json(payload)).await.unwrap();
+            assert_eq!(response.0.state.game.players.len(), n as usize);
+        }
+    }
+
+    #[tokio::test]
+    async fn join_unknown_game_reports_the_code_that_was_not_found() {
+        let state = test_state().await;
+        let payload = JoinRequest { name: None };
+        let err = join_game_seat(Path("NOSUCH".to_string()), State(state), Json(payload))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::NOT_FOUND);
+        assert!(err.1.0.message.contains("NOSUCH"), "the room code appears in the message");
+    }
+
+    #[tokio::test]
+    async fn get_unknown_game_reports_the_code_that_was_not_found() {
+        let state = test_state().await;
+        let err = get_game(Path("GHOST99".to_string()), State(state)).await.unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::NOT_FOUND);
+        assert!(err.1.0.message.contains("GHOST99"));
+    }
+
+    #[tokio::test]
+    async fn join_a_real_game_succeeds_and_issues_a_token() {
+        let state = test_state().await;
+        let create_payload = CreateGameRequest { num_players: 2, player_name: None };
+        let created = create_game(State(state.clone()), Json(create_payload)).await.unwrap();
+
+        let join_payload = JoinRequest { name: Some("Newcomer".to_string()) };
+        let joined = join_game_seat(Path(created.0.id.clone()), State(state), Json(join_payload))
+            .await
+            .unwrap();
+        assert_eq!(joined.0.seat_index, 1);
+        assert!(!joined.0.token.is_empty());
+    }
+
     #[tokio::test]
     async fn a_smaller_new_deal_seats_the_host_and_the_most_recent_arrivals() {
         // Four people, re-dealt as a 2-player game. The old behaviour kept
@@ -1482,6 +1591,23 @@ mod tests {
             assert!(!json.contains(&m.token), "token for seat {} leaked", m.seat);
         }
         assert!(!json.contains("token"), "no token field at all on the wire");
+    }
+
+    #[test]
+    fn api_error_carries_the_given_message() {
+        let (status, Json(body)) = api_error(axum::http::StatusCode::NOT_FOUND, "no such room");
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(body.message, "no such room");
+    }
+
+    #[test]
+    fn api_error_accepts_a_formatted_message() {
+        let id = "ABC123";
+        let (_, Json(body)) = api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            format!("No game with code {id}"),
+        );
+        assert_eq!(body.message, "No game with code ABC123");
     }
 
     #[test]

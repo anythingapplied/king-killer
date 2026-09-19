@@ -12,10 +12,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
       members load with an empty token, which authenticates nobody, so everyone
       connects as an observer and the seats stay held. New rooms are unaffected.
       Either clear the `games` table on deploy or add a reclaim path.
-- [ ] **`create_game`/`join_game_seat` don't report errors to the caller
-      either** — only the WebSocket path got `ServerMessage::Error`. A failed
-      REST call already returns a non-2xx status, which is a real signal, but
-      the body carries no explanation.
 
 ### Gameplay / UX
 
@@ -101,6 +97,11 @@ open are now closed, and a couple that read as closed turned out to be partial.
       previous `?seat=N` was self-asserted and every seat-based check was
       advisory. `RoomSnapshot` carries a separate `MemberView` type so the
       compiler prevents a token ever reaching a client.
+- [x] **`create_game` and `join_game_seat` report why they failed**, not just a
+      status code — a bad player count names the value, an unknown room code
+      names the code — via a shared `api_error` helper, and the client reads
+      the body (`readApiErrorMessage`) with a generic fallback if it's absent
+      or unparseable. `get_game` (the anonymous read) got the same treatment.
 - [x] **Rejected actions reach the player who sent them.** `apply_action`'s
       `Err` used to be swallowed with `let _ =`, leaving a click that did
       nothing with no explanation — most now-prevented client-side, but races,
@@ -167,11 +168,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Tests & docs
 
-- [x] Rust: 35 rules-engine tests; 25 server tests covering persistence, seats,
-      host gating, `SetName` authorization, chat, startup recovery, and the
-      socket handler's authorization/dispatch decisions.
-- [x] Frontend: 31 unit tests (shared rules, reconnect, chime, spectator
-      numbering, chat unread) and a Playwright layout spec.
+- [x] Rust: 35 rules-engine tests + 3 shared-fixture tests; 53 server tests
+      covering persistence, seats, host gating, `SetName` authorization, chat,
+      startup recovery, seat reassignment, REST error responses, and the socket
+      handler's authorization/dispatch decisions.
+- [x] Frontend: 66 unit tests (32 from the shared fixture, plus reconnect,
+      chime, spectator numbering, chat unread) and a Playwright layout spec.
 - [x] **Flaky tests fixed**: several assumed player 0 starts, which stopped
       being true once the starting player became random, and one drew the immune
       Jack of Diamonds about one run in four.
