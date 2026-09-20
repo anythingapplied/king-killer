@@ -12,7 +12,9 @@ interface CardProps {
     layoutId?: string;
 }
 
-export const getCardFileName = (card: CardType): string => {
+// Module-private: exporting a non-component from a component file breaks Fast
+// Refresh, and nothing outside this file uses it.
+const getCardFileName = (card: CardType): string => {
     if (card.rank === 'Joker') {
         return 'Joker.svg'; 
     }
@@ -37,7 +39,7 @@ export const getCardFileName = (card: CardType): string => {
 const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, className, layoutId }) => {
     if (isEmpty) {
         return (
-            <div className={`aspect-[5/7] border-2 border-slate-800/30 bg-slate-950/20 flex-shrink-0 ${className}`} />
+            <div className={`aspect-[5/7] border-2 border-slate-800/30 bg-slate-950/20 flex-shrink-0 ${className ?? ''}`} />
         );
     }
 
@@ -48,20 +50,22 @@ const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, c
         <motion.div 
             layoutId={layoutId}
             onClick={onClick}
-            // Standardize rising levels
+            // Lift is a share of the card's own height rather than a fixed 24px,
+            // so selection reads the same on a 60px phone card and a 120px
+            // desktop one instead of nearly clearing the small card.
             animate={{ 
-                y: selected ? -24 : 0,
+                y: selected ? '-16%' : 0,
                 scale: 1,
                 opacity: 1
             }}
-            whileHover={onClick && !selected ? { y: -8 } : {}}
+            whileHover={onClick && !selected ? { y: '-6%' } : {}}
             whileTap={onClick ? { scale: 0.95 } : {}}
             // Selection should be instant, no "normal delay" getting there
             transition={selected ? { duration: 0 } : { type: 'spring', stiffness: 300, damping: 20 }}
             className={`transition-shadow aspect-[5/7] flex-shrink-0
                 ${selected ? 'ring-4 ring-blue-500 shadow-[0_40px_60px_-10px_rgba(59,130,246,0.5)] z-50' : 'shadow-md'} 
                 ${onClick ? 'cursor-pointer' : ''}
-                ${className}`}
+                ${className ?? ''}`}
         >
             <img 
                 src={src} 

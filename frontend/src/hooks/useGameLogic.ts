@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember, ChatMessage } from '../types';
-import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, suitOrder } from '../gameLogic';
+import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, isSuitImmune, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
 import { newestSeen, unreadCount } from '../chatUnread';
+import { isWatching } from '../seatState';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
@@ -66,6 +67,25 @@ export const useGameLogic = () => {
   const [reconnecting, setReconnecting] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => isMuted());
   const [chat, setChat] = useState<ChatMessage[]>([]);
+  // The most recent server-side rejection, e.g. "that combo isn't legal" or
+  // "not enough to cover the damage". null once dismissed or timed out.
+  const [actionError, setActionError] = useState<{ id: number; action: string; message: string } | null>(null);
+  const actionErrorIdRef = useRef(0);
+  const actionErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onActionError = useCallback((action: string, message: string) => {
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
+    const id = ++actionErrorIdRef.current;
+    setActionError({ id, action, message });
+    actionErrorTimerRef.current = setTimeout(() => {
+      setActionError(current => (current?.id === id ? null : current));
+    }, 4000);
+  }, []);
+
+  const dismissActionError = useCallback(() => {
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
+    setActionError(null);
+  }, []);
   // Timestamp of the newest message already seen, so the HUD can badge unread
   // ones without the panel being mounted.
   //
@@ -82,6 +102,10 @@ export const useGameLogic = () => {
   const wasMyTurnRef = useRef<boolean | null>(null);
   // Pending activeEffects expiry timers, so they don't fire after unmount.
   const effectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Combat-effect ids were Date.now() + 1..4, so two batches raised within a
+  // few milliseconds of each other overlapped: duplicate React keys, and one
+  // batch's expiry filter removing the other's effects. A counter can't collide.
+  const effectIdRef = useRef(0);
   // The board's delayed mirror and the newest server state, mirrored into refs
   // because `applyServerState` runs from a socket event rather than a render:
   // a captured value would be stale by the time a frame arrives.
@@ -106,12 +130,13 @@ export const useGameLogic = () => {
     effectTimersRef.current = [];
     transitionTimersRef.current.forEach(clearTimeout);
     transitionTimersRef.current = [];
+    if (actionErrorTimerRef.current) clearTimeout(actionErrorTimerRef.current);
   }, []);
 
   const isMyTurn = localGameState?.current_player_index === myPlayerId;
   const isSolo = localGameState?.players.length === 1;
   // A member seated beyond the active game's player count watches the game.
-  const isSpectator = localGameState !== null && myPlayerId !== null && myPlayerId >= localGameState.players.length;
+  const isSpectator = isWatching(localGameState !== null, myPlayerId, localGameState?.players.length ?? 0);
 
   // Audio can only be started from a user gesture, and the chime fires from a
   // state update — never a gesture. Arm the context on the first interaction
@@ -190,27 +215,27 @@ export const useGameLogic = () => {
             return;
         }
         const effects: CombatEffect[] = [];
-        const ts = Date.now();
+        const nextEffectId = () => ++effectIdRef.current;
         const enemyChanged = prev.active_enemy && next.active_enemy && prev.active_enemy.card.id !== next.active_enemy.card.id;
         if (enemyChanged && prev.active_enemy) {
             // An enemy was just defeated (a new one appeared). Show the killing blow
             // over the old enemy's health before it flies away.
             const blow = calculateBlowDamage(next.last_played ?? [], prev.active_enemy);
-            if (blow > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${blow}`, type: 'damage' });
+            if (blow > 0) effects.push({ id: nextEffectId(), suit: 'Clubs', value: `-${blow}`, type: 'damage' });
         } else if (next.active_enemy && prev.active_enemy) {
             const damage = prev.active_enemy.current_health - next.active_enemy.current_health;
-            if (damage > 0) effects.push({ id: ts + 1, suit: 'Clubs', value: `-${damage}`, type: 'damage' });
+            if (damage > 0) effects.push({ id: nextEffectId(), suit: 'Clubs', value: `-${damage}`, type: 'damage' });
         }
         if (next.shield_value > prev.shield_value) {
-            effects.push({ id: ts + 2, suit: 'Spades', value: `+${next.shield_value - prev.shield_value}`, type: 'shield' });
+            effects.push({ id: nextEffectId(), suit: 'Spades', value: `+${next.shield_value - prev.shield_value}`, type: 'shield' });
         }
         if (next.tavern_deck.length > prev.tavern_deck.length && next.discard_pile.length < prev.discard_pile.length) {
-            effects.push({ id: ts + 3, suit: 'Hearts', value: `+${next.tavern_deck.length - prev.tavern_deck.length}`, type: 'heal' });
+            effects.push({ id: nextEffectId(), suit: 'Hearts', value: `+${next.tavern_deck.length - prev.tavern_deck.length}`, type: 'heal' });
         }
         const isJester = next.last_played?.some(c => c.rank === 'Joker');
         const totalHand = (gs: GameState) => gs.players.reduce((sum, p) => sum + p.hand.length, 0);
         if (!isJester && totalHand(next) > totalHand(prev)) {
-            effects.push({ id: ts + 4, suit: 'Diamonds', value: `+${totalHand(next) - totalHand(prev)}`, type: 'draw' });
+            effects.push({ id: nextEffectId(), suit: 'Diamonds', value: `+${totalHand(next) - totalHand(prev)}`, type: 'draw' });
         }
         if (effects.length > 0) {
             setActiveEffects(prevEffects => [...prevEffects, ...effects]);
@@ -292,11 +317,13 @@ export const useGameLogic = () => {
   const connectWebSocket = useCallback(() => {
     const id = gameId;
     if (!id || intentionalCloseRef.current) return;
-    // The server uses this only to authorize NewGame/Reset (see WsParams in
-    // main.rs) - every other action still targets the game's own
-    // current_player_index, so this cannot be used to act as someone else.
-    const seatParam = myPlayerId !== null ? `?seat=${myPlayerId}` : '';
-    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${seatParam}`);
+    // The seat token is the connection's identity (see WsParams in main.rs).
+    // The server derives the seat from it rather than trusting a seat we claim,
+    // so a missing token means watching rather than playing. Every path that
+    // sets gameId writes the token first, so it is always in place by the time
+    // this runs - no need to re-connect when the seat becomes known.
+    const token = localStorage.getItem(`token_${id}`);
+    const socket = new WebSocket(`${WS_BASE}/api/ws/${id}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
     ws.current = socket;
     // A socket we have already moved on from can still deliver a frame that was
     // in flight when we closed it. Applying it overwrites the room we just
@@ -330,6 +357,15 @@ export const useGameLogic = () => {
       serverStateRef.current = payload.game;
       setRoster(payload.members);
       setChat(payload.chat ?? []);
+      // The server decides which seat this connection holds (it resolves the
+      // token); a re-deal can move it, so trust this over the seat stored at
+      // join. Guarded so an older server that omits the field doesn't wipe it.
+      if (payload.you !== undefined) {
+        setMyPlayerId(payload.you);
+        if (payload.you !== null) {
+          localStorage.setItem(`seat_${payload.id}`, String(payload.you));
+        }
+      }
       applyServerState(payload.game);
     };
     socket.onmessage = (event) => {
@@ -343,6 +379,11 @@ export const useGameLogic = () => {
       }
       if (msg && typeof msg === 'object' && (msg as { type?: string }).type === 'State') {
         onState((msg as { payload: RoomSnapshot }).payload);
+        return;
+      }
+      if (msg && typeof msg === 'object' && (msg as { type?: string }).type === 'Error') {
+        const { action: failedAction, message } = (msg as { payload: { action: string; message: string } }).payload;
+        onActionError(failedAction, message);
         return;
       }
       // Untagged frame: only accept it if it actually looks like a snapshot,
@@ -360,7 +401,7 @@ export const useGameLogic = () => {
       backoffRef.current = Math.min(backoffRef.current * 1.5, 8000);
       scheduleReconnect();
     };
-  }, [gameId, myPlayerId, scheduleReconnect, applyServerState]);
+  }, [gameId, scheduleReconnect, applyServerState, onActionError]);
 
   useEffect(() => {
     connectRef.current = connectWebSocket;
@@ -465,9 +506,8 @@ export const useGameLogic = () => {
 
   const isImmuneWarning = useMemo(() => {
     if (!localGameState?.active_enemy || selectedIndices.length === 0) return false;
-    const enemySuit = localGameState.active_enemy.card.suit;
-    if (!enemySuit || localGameState.active_enemy.is_jester_active) return false;
-    return selectedIndices.some(idx => seatedPlayer?.hand[idx]?.suit === enemySuit);
+    const enemy = localGameState.active_enemy;
+    return selectedIndices.some(idx => isSuitImmune(seatedPlayer?.hand[idx]?.suit, enemy));
   }, [selectedIndices, localGameState, seatedPlayer]);
 
   const createGame = async (numPlayers: number) => {
@@ -480,8 +520,9 @@ export const useGameLogic = () => {
     });
     if (!res.ok) {
       // Without this the app set gameId to undefined and bounced back to the
-      // menu with no explanation.
-      alert('Could not start a game. Please try again.');
+      // menu with no explanation. The server now says why (bad player count,
+      // for instance); fall back to a generic message if it didn't.
+      alert(await readApiErrorMessage(res, 'Could not start a game. Please try again.'));
       return;
     }
     const data = await res.json();
@@ -489,6 +530,8 @@ export const useGameLogic = () => {
     serverStateRef.current = data.state.game;
     applyServerState(data.state.game);
     localStorage.setItem(`seat_${data.id}`, "0");
+    // Issued once, here and nowhere else; without it this client cannot act.
+    if (data.token) localStorage.setItem(`token_${data.id}`, data.token);
     setUrlGameId(data.id);
   };
 
@@ -522,14 +565,18 @@ export const useGameLogic = () => {
     try {
       const res = await fetch(`${API_BASE}/api/game/${id}`);
       if (!res.ok) {
-        alert("Game not found");
+        alert(await readApiErrorMessage(res, 'Game not found.'));
         return;
       }
       const snap = await res.json() as RoomSnapshot;
 
       // A seat from an earlier session (resume case) skips the join call.
+      // Only resume without re-joining if we still hold the seat's token; a
+      // remembered seat number alone no longer proves anything, so fall through
+      // to a fresh join instead of connecting as an observer.
       const savedSeat = parseSeat(localStorage.getItem(`seat_${id}`));
-      if (savedSeat !== null) {
+      const savedToken = localStorage.getItem(`token_${id}`);
+      if (savedSeat !== null && savedToken) {
         setChat([]); setChatSeenAt(0);
         setGameId(id);
         serverStateRef.current = snap.game;
@@ -555,9 +602,10 @@ export const useGameLogic = () => {
         setRoster(snap.members);
         setMyPlayerId(data.seat_index);
         localStorage.setItem(`seat_${id}`, data.seat_index.toString());
+        if (data.token) localStorage.setItem(`token_${id}`, data.token);
         setUrlGameId(id, push);
       } else {
-        alert("Could not join the game. Please try again.");
+        alert(await readApiErrorMessage(joinRes, 'Could not join the game. Please try again.'));
       }
     } finally {
       joiningRef.current.delete(id);
@@ -599,6 +647,19 @@ export const useGameLogic = () => {
     if (!trimmed) return;
     localStorage.setItem('kingkiller_player_name', trimmed);
     if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
+  };
+
+  /** Reads the `{ message }` body `ApiError` sends; falls back for anything
+   *  that isn't shaped that way - an older server, a proxy's own error page,
+   *  or a response with no body at all. */
+  const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+    try {
+      const body = await res.json();
+      if (body && typeof body.message === 'string' && body.message) return body.message;
+    } catch {
+      // Not JSON, or no body - fall through.
+    }
+    return fallback;
   };
 
   const sendChat = (text: string) => {
@@ -658,6 +719,9 @@ export const useGameLogic = () => {
     }
     clearUrlGameId(push);
     clearTransitionTimers();
+    // The token deliberately survives leaving: it is what lets you come back to
+    // the same seat. Dropping it would force a fresh join, and the old member
+    // still holds your seat, so you would return as a spectator.
     serverStateRef.current = null;
     commitLocalState(null);
     setGameId(null); setRoster([]); setMyPlayerId(null); setSelectedIndices([]);
@@ -689,7 +753,7 @@ export const useGameLogic = () => {
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
-    chat, sendChat,
+    chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,

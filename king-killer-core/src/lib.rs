@@ -1,8 +1,29 @@
+//! King Killer rules engine.
+//!
+//! Pure game logic with no I/O: the server owns transport and persistence, this
+//! crate owns what is legal and what it does. Every state transition goes
+//! through a `&mut GameState` method returning `Result<(), String>`; a rejected
+//! action leaves the state exactly as it was.
+//!
+//! Determinism is the load-bearing property. A game is fully reproducible from
+//! `(seed, RULES_VERSION, ordered actions)`, which is what the server's history
+//! table stores. Two things follow from that:
+//!
+//! * All randomness goes through [`GameRng`]. Never reach for a thread RNG.
+//! * Any change to rules *or* to the RNG must bump [`RULES_VERSION`], or stored
+//!   histories will silently replay into a different game.
+//!
+//! Some rules here are mirrored in `frontend/src/gameLogic.ts` so the UI can
+//! grey out illegal plays. The server is authoritative and rejects bad actions
+//! silently, so a divergence surfaces as a click that does nothing — keep
+//! `is_valid_combo`, `Card::attack_value` and `calculate_attack_value` in step
+//! with their TypeScript counterparts.
+
 use serde::{Deserialize, Serialize};
 
 /// Bump whenever game rules OR the deterministic RNG algorithm change.
 /// History replay and snapshot migration key off this value.
-pub const RULES_VERSION: u32 = 3;
+pub const RULES_VERSION: u32 = 4;
 
 /// Deterministic, portable PRNG for all game randomness (SplitMix64).
 ///
@@ -41,7 +62,76 @@ impl GameRng {
     }
 }
 
-/// Fisher–Yates shuffle using [`GameRng`].
+/// Resolution priority for suit powers.
+///
+/// Hearts must resolve before Diamonds (heal into the Tavern deck, *then* draw
+/// from it). Clubs and Spades are order-independent, but they still need a
+/// fixed rank: a comparator that reports most pairs as `Equal` while reporting
+/// one pair as ordered is not a total order, which silently produces the wrong
+/// order and can panic on newer toolchains.
+fn suit_resolution_order(suit: Suit) -> u8 {
+    match suit {
+        Suit::Hearts => 0,
+        Suit::Diamonds => 1,
+        Suit::Clubs => 2,
+        Suit::Spades => 3,
+    }
+}
+
+/// Validates hand indices coming off the wire and returns them sorted
+/// descending, which is the order they must be removed in so earlier removals
+/// don't shift later ones.
+///
+/// Duplicates are rejected: because each `remove` shifts the hand, a repeated
+/// index used to pull out a *different* card, letting a client play or discard
+/// cards it never selected.
+fn validate_hand_indices(indices: &[usize], hand_len: usize) -> Result<Vec<usize>, String> {
+    if indices.is_empty() {
+        return Err("No cards selected".to_string());
+    }
+    let mut sorted = indices.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    if sorted[0] >= hand_len {
+        return Err("Invalid card index".to_string());
+    }
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err("Duplicate card index".to_string());
+    }
+    Ok(sorted)
+}
+
+/// Hand limit by table size (8/7/6/5 for 1-4 players).
+///
+/// Both the deal and [`GameState::hand_limit`] go through this, so the two
+/// can't drift apart - they previously each carried their own copy of the
+/// table, and a field named `max_hand_size` sitting next to a method of the
+/// same name made the duplication easy to miss.
+fn hand_limit_for(player_count: u32) -> usize {
+    match player_count {
+        1 => 8,
+        2 => 7,
+        3 => 6,
+        _ => 5,
+    }
+}
+
+/// Removes `sorted_desc` (validated, highest index first) from a hand and
+/// returns the cards in that order.
+fn take_cards(hand: &mut Vec<Card>, sorted_desc: &[usize]) -> Vec<Card> {
+    sorted_desc.iter().map(|&idx| hand.remove(idx)).collect()
+}
+
+/// Puts cards taken by [`take_cards`] back exactly where they came from.
+///
+/// Appending them instead would silently reorder the hand every time a play or
+/// discard was rejected.
+fn restore_cards(hand: &mut Vec<Card>, sorted_desc: &[usize], cards: Vec<Card>) {
+    for (&idx, card) in sorted_desc.iter().rev().zip(cards.into_iter().rev()) {
+        hand.insert(idx, card);
+    }
+}
+
+/// Fisher-Yates shuffle using [`GameRng`].
 fn shuffle<T>(slice: &mut [T], rng: &mut GameRng) {
     for i in (1..slice.len()).rev() {
         let j = rng.next_index(i);
@@ -108,12 +198,9 @@ impl Card {
         }
     }
 
-    pub fn health_value(&self) -> u32 {
-        self.attack_value()
-    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Enemy {
     pub card: Card,
     pub current_health: i32,
@@ -123,13 +210,19 @@ pub struct Enemy {
 }
 
 impl Enemy {
+    /// # Panics
+    /// Panics if `card` is not a Jack, Queen or King. Enemies only ever come
+    /// from the castle deck, which holds face cards exclusively.
     pub fn new(card: Card) -> Self {
-        let (health, attack) = match card.rank {
-            Rank::Jack => (20, 10),
-            Rank::Queen => (30, 15),
-            Rank::King => (40, 20),
-            _ => panic!("Invalid enemy rank"),
+        let health = match card.rank {
+            Rank::Jack => 20,
+            Rank::Queen => 30,
+            Rank::King => 40,
+            _ => panic!("Invalid enemy rank: enemies must be face cards"),
         };
+        /* An enemy's attack is just the card's own value, so don't keep a
+           second copy of that table here. */
+        let attack = card.attack_value() as i32;
 
         Self {
             card,
@@ -146,6 +239,46 @@ impl Enemy {
         }
         self.card.suit == Some(suit)
     }
+}
+
+/// What happened in a single game-log entry. Unit variants, so they serialize
+/// as plain strings and the client can switch on them directly.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum LogKind {
+    Played,
+    Yielded,
+    Discarded,
+    /// A solo player burned a Jester to refresh their hand.
+    Jester,
+    EnemyDefeated,
+    EnemyRevealed,
+}
+
+/// One event in the running game log.
+///
+/// `player` is `None` for table events that belong to nobody (an enemy being
+/// revealed or defeated). `cards` is empty for a yield.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogEntry {
+    pub player: Option<usize>,
+    pub kind: LogKind,
+    pub cards: Vec<Card>,
+}
+
+/// The whole state is broadcast on every action, so the log is capped to keep
+/// that payload bounded. Oldest entries fall off the front.
+const GAME_LOG_CAP: usize = 200;
+
+/// One turn's contribution to the current enemy: who acted, and what they put
+/// on the table. An empty `cards` is a yield.
+///
+/// `played_cards` flattens every card into one pile, which loses the grouping —
+/// you can't tell a played pair of 5s from two separate 5s. This keeps the
+/// shape of each play so the board can show the fight turn by turn.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlayRecord {
+    pub player: usize,
+    pub cards: Vec<Card>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +334,18 @@ pub struct GameState {
     pub castle_deck: Vec<Card>,
     pub discard_pile: Vec<Card>,
     pub played_cards: Vec<Card>, // Cards played against current enemy
+    /// Every play against the current enemy, in order and still grouped as it
+    /// was played. Reset whenever the enemy changes. `#[serde(default)]` keeps
+    /// older snapshots loadable.
+    #[serde(default)]
+    pub play_log: Vec<PlayRecord>,
+    /// Running history of the whole game, oldest first. Unlike `play_log` this
+    /// survives across enemies. Capped at [`GAME_LOG_CAP`].
+    #[serde(default)]
+    pub game_log: Vec<LogEntry>,
+    /// The most recent play. `Some(vec![])` means the player yielded — an empty
+    /// play is still a play, and the UI shows it as "Yield" rather than leaving
+    /// the previous player's cards on screen as if nothing happened.
     pub last_played: Option<Vec<Card>>,
     pub last_discarded: Option<Vec<Card>>,
     pub active_enemy: Option<Enemy>,
@@ -212,6 +357,12 @@ pub struct GameState {
     /// How the most recently defeated enemy card was resolved, used for
     /// client-side defeat animations. `None` until an enemy has been defeated.
     pub last_enemy_fate: Option<EnemyFate>,
+    /// Yields taken in a row since the last card was played. A player may not
+    /// yield once [rules wording removed], which
+    /// would otherwise stall the table forever. `#[serde(default)]` lets
+    /// pre-existing snapshots load.
+    #[serde(default)]
+    pub consecutive_yields: usize,
 }
 
 impl GameState {
@@ -234,6 +385,9 @@ impl GameState {
 
     /// Create a game deal from an explicit seed. Identical deals for identical
     /// seeds — the basis for replaying `game_history` from a stored seed.
+    /// # Panics
+    /// Panics unless `num_players` is 1-4. Callers taking a player count from
+    /// untrusted input must validate or clamp it first.
     pub fn new_with_seed(seed: u64, num_players: u32) -> Self {
         let mut rng = GameRng::new(seed);
         let mut next_id = 1;
@@ -285,13 +439,14 @@ impl GameState {
             next_id += 1;
         }
 
-        let (jesters, max_hand_size, solo_jesters) = match num_players {
-            1 => (0, 8, 2),
-            2 => (0, 7, 0),
-            3 => (1, 6, 0),
-            4 => (2, 5, 0),
-            _ => panic!("Invalid number of players"),
+        let (jesters, solo_jesters) = match num_players {
+            1 => (0, 2),
+            2 => (0, 0),
+            3 => (1, 0),
+            4 => (2, 0),
+            _ => panic!("Invalid number of players: King Killer is a 1-4 player game"),
         };
+        let max_hand_size = hand_limit_for(num_players);
 
         for _ in 0..jesters {
             tavern_deck.push(Card::joker(next_id));
@@ -321,6 +476,8 @@ impl GameState {
             castle_deck,
             discard_pile: Vec::new(),
             played_cards: Vec::new(),
+            play_log: Vec::new(),
+            game_log: Vec::new(),
             last_played: None,
             last_discarded: None,
             active_enemy: None,
@@ -330,6 +487,7 @@ impl GameState {
             solo_jesters,
             max_hand_size,
             last_enemy_fate: None,
+            consecutive_yields: 0,
         };
 
         state.next_enemy();
@@ -348,9 +506,11 @@ impl GameState {
 
     pub fn next_enemy(&mut self) {
         if let Some(card) = self.castle_deck.pop() {
+            self.log(None, LogKind::EnemyRevealed, vec![card.clone()]);
             self.active_enemy = Some(Enemy::new(card));
             self.shield_value = 0;
             self.played_cards = Vec::new();
+            self.play_log = Vec::new();
             self.phase = TurnPhase::AwaitingPlay;
         } else {
             self.status = GameStatus::Won;
@@ -370,21 +530,24 @@ impl GameState {
         // that means before any cards are discarded).
 
         self.solo_jesters -= 1;
+        self.log(Some(self.current_player_index), LogKind::Jester, Vec::new());
+        let refill_to = self.hand_limit();
         let player = &mut self.players[0];
-        
-        // Discard hand
+
+        /* Discard the hand, then refill to the hand limit. */
         self.discard_pile.extend(player.hand.drain(..));
-        
-        // Draw new FULL hand (8 cards for solo)
-        for _ in 0..8 {
+        for _ in 0..refill_to {
             if let Some(card) = self.tavern_deck.pop() {
                 player.hand.push(card);
             }
         }
 
-        // If we were in discard phase, we might now be able to satisfy damage.
-        // We stay in current phase.
-        self.check_solo_loss();
+        /* We stay in the current phase. If that phase is AwaitingDiscard the
+           fresh hand may still not cover the hit, and with the last Jester now
+           spent there is no legal move left - re-run the check so the game ends
+           instead of sitting in AwaitingDiscard forever. */
+        self.recheck_discard_satisfiable();
+        self.check_turn_playable();
         Ok(())
     }
 
@@ -398,60 +561,70 @@ impl GameState {
         }
 
         let player = &mut self.players[self.current_player_index];
-        let mut played_cards = Vec::new();
+        /* Validate up front so nothing is removed from the hand unless the
+           whole selection is sound. */
+        let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
 
-        let mut sorted_indices = card_indices.clone();
-        sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+        let played_cards = take_cards(&mut player.hand, &sorted_indices);
 
-        for idx in sorted_indices {
-            if idx >= player.hand.len() {
-                return Err("Invalid card index".to_string());
-            }
-            played_cards.push(player.hand.remove(idx));
-        }
-
-        if played_cards.is_empty() {
-            return Err("No cards played".to_string());
-        }
-
-        if !self.is_valid_combo(&played_cards) {
-            // Restore cards to hand if invalid
+        if !Self::is_valid_combo(&played_cards) {
             let player = &mut self.players[self.current_player_index];
-            player.hand.extend(played_cards);
+            restore_cards(&mut player.hand, &sorted_indices, played_cards);
             return Err("Invalid card combination".to_string());
         }
 
-        if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
-            if let Some(ref mut enemy) = self.active_enemy {
-                let formerly_immune_suit = enemy.card.suit;
-                enemy.is_jester_active = true;
+        /* A card reached the table, so any run of yields is broken. */
+        self.consecutive_yields = 0;
+        self.play_log.push(PlayRecord {
+            player: self.current_player_index,
+            cards: played_cards.clone(),
+        });
+        self.log(Some(self.current_player_index), LogKind::Played, played_cards.clone());
 
-                // Retroactive powers for cards already on the table
-                if let Some(suit) = formerly_immune_suit {
-                    let cards_to_retrigger: Vec<Card> = self.played_cards.iter()
-                        .filter(|c| c.suit == Some(suit))
-                        .cloned()
-                        .collect();
-                    
-                    if !cards_to_retrigger.is_empty() {
-                        let attack_value = self.calculate_attack_value(&cards_to_retrigger);
-                        self.apply_suit_powers(attack_value, &[suit]);
-                    }
+        if played_cards.len() == 1 && played_cards[0].rank == Rank::Joker {
+            let formerly_immune_suit = match self.active_enemy {
+                Some(ref mut enemy) => {
+                    enemy.is_jester_active = true;
+                    enemy.card.suit
                 }
+                None => None,
+            };
+
+            /* Only Spades apply retroactively. A spade's shield is an ongoing
+               reduction that starts counting the moment immunity drops, while
+               Hearts and Diamonds are one-shot effects that already resolved
+               (or were blocked) when those cards were played. Clubs doubling is
+               explicitly not retroactive either. */
+            if formerly_immune_suit == Some(Suit::Spades) {
+                let retro_shield: u32 = self.played_cards.iter()
+                    .filter(|c| c.suit == Some(Suit::Spades))
+                    .map(|c| c.attack_value())
+                    .sum();
+                self.shield_value += retro_shield as i32;
             }
+
             self.last_played = Some(played_cards.clone());
-            self.discard_pile.extend(played_cards);
-            if self.players.len() > 2 {
-                // The Jester's player chooses who takes the next turn. With only
-                // two players there is no choice to make, so play just passes on.
+
+            /* The Jester is played to the table like any other card. It joins
+               the play area and only reaches the discard pile when the enemy is
+               defeated - discarding it immediately let a Hearts heal shuffle it
+               back into the Tavern deck mid-fight. */
+            self.played_cards.extend(played_cards);
+
+            /* Rules: "[rules wording removed]". Any player - including
+               themselves - so the choice is real at every table size, and at a
+               two-player table it is "keep the turn or pass it". Never advance
+               the turn automatically.
+
+               Solo tables deal no Jesters, but guard the count anyway so a
+               one-player game can never be parked waiting on a choice. */
+            if self.players.len() > 1 {
                 self.phase = TurnPhase::AwaitingNextPlayer;
-            } else {
-                self.current_player_index = (self.current_player_index + 1) % self.players.len();
             }
             return Ok(());
         }
 
-        let attack_value = self.calculate_attack_value(&played_cards);
+        let attack_value = Self::calculate_attack_value(&played_cards);
         let suits = self.get_active_suits(&played_cards);
 
         self.last_played = Some(played_cards.clone());
@@ -472,9 +645,15 @@ impl GameState {
         self.played_cards.extend(played_cards);
 
         if enemy_defeated {
-            let enemy = self.active_enemy.take().unwrap();
+            /* `enemy_defeated` is only ever set inside the `Some` arm above, so
+               this cannot be None - but say so in code rather than unwrapping. */
+            let Some(enemy) = self.active_enemy.take() else {
+                return Err("Active enemy disappeared mid-turn".to_string());
+            };
             let exact_kill = enemy.current_health == 0;
             self.last_enemy_fate = Some(if exact_kill { EnemyFate::Tavern } else { EnemyFate::Discard });
+            /* Log before the card is moved out into a pile. */
+            self.log(None, LogKind::EnemyDefeated, vec![enemy.card.clone()]);
             if exact_kill {
                 self.tavern_deck.push(enemy.card);
             } else {
@@ -482,7 +661,7 @@ impl GameState {
             }
             self.discard_pile.extend(self.played_cards.drain(..));
             self.next_enemy();
-            self.check_solo_loss();
+            self.check_turn_playable();
             return Ok(());
         }
 
@@ -500,6 +679,12 @@ impl GameState {
         }
         self.current_player_index = index;
         self.phase = TurnPhase::AwaitingPlay;
+        /* Every path that opens a turn checks that the player can act. Not
+           currently reachable - playing the Jester resets the yield streak, so
+           a chosen empty-handed player can always still yield - but this is the
+           one remaining turn-opening path that didn't check, and one path
+           forgetting is exactly how the shielded-attack softlock happened. */
+        self.check_turn_playable();
         Ok(())
     }
 
@@ -508,10 +693,24 @@ impl GameState {
             return Err("Can only yield during play phase".to_string());
         }
         
-        // Single player cannot yield (Rules)
+        /* Single player cannot yield (Rules). */
         if self.players.len() == 1 {
              return Err("Cannot yield in solo play".to_string());
         }
+
+        /* Rules: [rules wording removed] already yielded on
+           their last turn - the table would never make progress. */
+        if self.consecutive_yields + 1 >= self.players.len() {
+            return Err("Cannot yield: every other player has already yielded".to_string());
+        }
+        self.consecutive_yields += 1;
+        /* Record the yield so the board reflects it. */
+        self.last_played = Some(Vec::new());
+        self.play_log.push(PlayRecord {
+            player: self.current_player_index,
+            cards: Vec::new(),
+        });
+        self.log(Some(self.current_player_index), LogKind::Yielded, Vec::new());
 
         self.enter_discard_phase()
     }
@@ -528,24 +727,12 @@ impl GameState {
                 damage_to_take: enemy_attack,
             };
             
-            // Check for Loss: Can the player satisfy damage?
-            // If they have Jesters, don't trigger loss yet! They might refresh.
-            if self.solo_jesters == 0 {
-                let player = &self.players[self.current_player_index];
-                let total_hand_value: i32 = player.hand.iter().map(|c| {
-                    match c.rank {
-                        Rank::Ace => 1, Rank::Joker => 0, Rank::Jack => 10, Rank::Queen => 15, Rank::King => 20, Rank::Number(n) => n as i32,
-                    }
-                }).sum();
-
-                if total_hand_value < enemy_attack {
-                    self.status = GameStatus::Lost(format!("Cannot satisfy {} damage.", enemy_attack));
-                }
-            }
+            /* Check for loss: can the player satisfy the damage? A solo player
+               holding a Jester can still refresh their hand, so hold off. */
+            self.recheck_discard_satisfiable();
         } else {
-            // No damage to take, move to next player
-            self.current_player_index = (self.current_player_index + 1) % self.players.len();
-            self.phase = TurnPhase::AwaitingPlay;
+            /* No damage to take - the turn simply passes on. */
+            self.advance_turn();
         }
         Ok(())
     }
@@ -553,36 +740,23 @@ impl GameState {
     pub fn discard_cards(&mut self, card_indices: Vec<usize>) -> Result<(), String> {
         if let TurnPhase::AwaitingDiscard { damage_to_take } = self.phase {
             let player = &mut self.players[self.current_player_index];
-            let mut discarded_cards = Vec::new();
+            /* Validate up front so a bad selection never disturbs the hand. */
+            let sorted_indices = validate_hand_indices(&card_indices, player.hand.len())?;
 
-            let mut sorted_indices = card_indices.clone();
-            sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+            let discarded_cards = take_cards(&mut player.hand, &sorted_indices);
+            let discard_value: i32 = discarded_cards.iter().map(|c| c.attack_value() as i32).sum();
 
-            for idx in sorted_indices {
-                if idx >= player.hand.len() {
-                    return Err("Invalid card index".to_string());
-                }
-                discarded_cards.push(player.hand.remove(idx));
-            }
-
-            let discard_value: i32 = discarded_cards.iter().map(|c| {
-                match c.rank {
-                    Rank::Ace => 1, Rank::Joker => 0, Rank::Jack => 10, Rank::Queen => 15, Rank::King => 20, Rank::Number(n) => n as i32,
-                    }
-            }).sum();
-            
             if discard_value < damage_to_take {
-                // Restore cards to hand if insufficient
                 let player = &mut self.players[self.current_player_index];
-                player.hand.extend(discarded_cards);
+                restore_cards(&mut player.hand, &sorted_indices, discarded_cards);
                 return Err(format!("Insufficient discard value: {} < {}", discard_value, damage_to_take));
             } else {
-                // Damage satisfied
+                /* Only log once the discard actually stands - logging before the
+                   sufficiency check wrote a phantom entry for every rejection. */
+                self.log(Some(self.current_player_index), LogKind::Discarded, discarded_cards.clone());
                 self.last_discarded = Some(discarded_cards.clone());
                 self.discard_pile.extend(discarded_cards);
-                self.current_player_index = (self.current_player_index + 1) % self.players.len();
-                self.phase = TurnPhase::AwaitingPlay;
-                self.check_solo_loss(); // Check if next player (if solo) is stuck
+                self.advance_turn();
             }
             Ok(())
         } else {
@@ -590,17 +764,95 @@ impl GameState {
         }
     }
 
-    fn check_solo_loss(&mut self) {
-        if self.players.len() == 1 && self.status == GameStatus::InProgress {
-            let player = &self.players[0];
-            // If they have cards or Jesters, they aren't lost yet.
-            if player.hand.is_empty() && self.solo_jesters == 0 {
-                self.status = GameStatus::Lost("Out of cards and Jesters.".to_string());
-            }
+    /// Test-only wrapper over the private [`GameState::log`], so the cap can be
+    /// exercised without making the logger itself part of the public API.
+    #[doc(hidden)]
+    pub fn log_for_test(&mut self, player: Option<usize>, kind: LogKind, cards: Vec<Card>) {
+        self.log(player, kind, cards);
+    }
+
+    /// Appends a game-log entry, trimming the oldest once the cap is hit.
+    fn log(&mut self, player: Option<usize>, kind: LogKind, cards: Vec<Card>) {
+        self.game_log.push(LogEntry { player, kind, cards });
+        if self.game_log.len() > GAME_LOG_CAP {
+            let excess = self.game_log.len() - GAME_LOG_CAP;
+            self.game_log.drain(0..excess);
         }
     }
 
-    fn is_valid_combo(&self, cards: &[Card]) -> bool {
+    /// Total value of a hand when discarded to soak damage (Ace 1, Jester 0,
+    /// face cards 10/15/20) - the same scale as [`Card::attack_value`].
+    fn hand_value(&self, player_index: usize) -> i32 {
+        self.players[player_index]
+            .hand
+            .iter()
+            .map(|c| c.attack_value() as i32)
+            .sum()
+    }
+
+    /// Ends the game if the current player is facing a hit they cannot pay and
+    /// has no Jester left to refresh with. Safe to call repeatedly; it does
+    /// nothing outside the discard phase.
+    fn recheck_discard_satisfiable(&mut self) {
+        let damage_to_take = match self.phase {
+            TurnPhase::AwaitingDiscard { damage_to_take } => damage_to_take,
+            _ => return,
+        };
+        if self.solo_jesters > 0 || self.status != GameStatus::InProgress {
+            return;
+        }
+        if self.hand_value(self.current_player_index) < damage_to_take {
+            self.status = GameStatus::Lost(format!("Cannot satisfy {} damage.", damage_to_take));
+        }
+    }
+
+    /// Ends the game if whoever's turn it now is cannot legally act.
+    ///
+    /// Rules: the players lose if anyone [rules wording removed]. A solo player has no yield, so an empty hand with no Jester
+    /// left is terminal. At a full table an empty-handed player can normally
+    /// still yield - unless everyone else already yielded, which is the one
+    /// case where they are genuinely stuck.
+    fn check_turn_playable(&mut self) {
+        if self.status != GameStatus::InProgress {
+            return;
+        }
+        if !self.players[self.current_player_index].hand.is_empty() {
+            return;
+        }
+
+        if self.players.len() == 1 {
+            if self.solo_jesters == 0 {
+                self.status = GameStatus::Lost("Out of cards and Jesters.".to_string());
+            }
+            return;
+        }
+
+        if self.consecutive_yields + 1 >= self.players.len() {
+            self.status = GameStatus::Lost("No cards to play and unable to yield.".to_string());
+        }
+    }
+
+    /// Hands the turn to the next player and opens their play phase.
+    ///
+    /// Every path that ends a turn goes through here so the can-they-actually-move
+    /// check cannot be forgotten. It was previously duplicated at each site and
+    /// missing from one of them: when a shield cancelled the enemy's attack
+    /// entirely, the discard step was skipped, and with it the only loss check
+    /// on that path - handing the turn back to a solo player with an empty hand
+    /// and no Jester, with no game over.
+    fn advance_turn(&mut self) {
+        self.current_player_index = (self.current_player_index + 1) % self.players.len();
+        self.phase = TurnPhase::AwaitingPlay;
+        self.check_turn_playable();
+    }
+
+    /// Whether `cards` form a legal play.
+    ///
+    /// Public and free of `self` because it is a pure question about cards,
+    /// and because `frontend/src/gameLogic.ts` re-implements it to grey out
+    /// illegal selections — the two are checked against a shared fixture in
+    /// `shared/rule-fixtures.json`, which needs to call this directly.
+    pub fn is_valid_combo(cards: &[Card]) -> bool {
         if cards.len() == 1 {
             return true;
         }
@@ -628,7 +880,9 @@ impl GameState {
         false
     }
 
-    fn calculate_attack_value(&self, cards: &[Card]) -> u32 {
+    /// Total attack value of a play, before suit powers. Mirrored in
+    /// `gameLogic.ts` and covered by the shared fixture.
+    pub fn calculate_attack_value(cards: &[Card]) -> u32 {
         cards.iter().map(|c| c.attack_value()).sum()
     }
 
@@ -650,11 +904,9 @@ impl GameState {
 
     fn apply_suit_powers(&mut self, attack_value: u32, suits: &[Suit]) {
         let mut resolved_suits = suits.to_vec();
-        resolved_suits.sort_by(|a, b| match (a, b) {
-            (Suit::Hearts, Suit::Diamonds) => std::cmp::Ordering::Less,
-            (Suit::Diamonds, Suit::Hearts) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        });
+        /* Total order, so Hearts always resolves before Diamonds regardless of
+           which other suits were played alongside them. */
+        resolved_suits.sort_by_key(|&s| suit_resolution_order(s));
 
         for suit in resolved_suits {
             if self.is_enemy_immune(suit) {
@@ -677,7 +929,7 @@ impl GameState {
                         let mut found_drawer = false;
                         for i in 0..player_count {
                             let idx = (self.current_player_index + drawer_offset + i) % player_count;
-                            let max_hand = self.max_hand_size();
+                            let max_hand = self.hand_limit();
                             if self.players[idx].hand.len() < max_hand {
                                 if let Some(card) = self.tavern_deck.pop() {
                                     self.players[idx].hand.push(card);
@@ -698,13 +950,9 @@ impl GameState {
         }
     }
 
-    fn max_hand_size(&self) -> usize {
-        match self.players.len() {
-            1 => 8,
-            2 => 7,
-            3 => 6,
-            4 => 5,
-            _ => 0,
-        }
+    /// Named distinctly from the `max_hand_size` field so `self.max_hand_size`
+    /// and `self.hand_limit()` can no longer be confused for one another.
+    fn hand_limit(&self) -> usize {
+        hand_limit_for(self.players.len() as u32)
     }
 }

@@ -32,6 +32,21 @@ export interface Enemy {
     is_jester_active: boolean;
 }
 
+export type LogKind = 'Played' | 'Yielded' | 'Discarded' | 'Jester' | 'EnemyDefeated' | 'EnemyRevealed';
+
+/** One event in the running game log. `player` is null for table events. */
+export interface LogEntry {
+    player: number | null;
+    kind: LogKind;
+    cards: Card[];
+}
+
+/** One turn's play against the current enemy. Empty `cards` means a yield. */
+export interface PlayRecord {
+    player: number;
+    cards: Card[];
+}
+
 export interface Player {
     id: number;
     name: string;
@@ -43,6 +58,19 @@ export interface Player {
 export interface RoomMember {
     seat: number;
     name: string;
+    /** True for whoever first joined this room. Only the host may start a new
+     *  deal. Optional so a snapshot from an older server still type-checks. */
+    host?: boolean;
+}
+
+/** A room chat message. `name` is the sender's name as it stood when they
+ *  sent it, so a later rename doesn't rewrite history. */
+export interface ChatMessage {
+    seat: number;
+    name: string;
+    text: string;
+    /** Unix epoch millis. */
+    at: number;
 }
 
 /** The state broadcast by the server: the shared game plus the full room
@@ -51,6 +79,13 @@ export interface RoomSnapshot {
     id: string;
     game: GameState;
     members: RoomMember[];
+    /** The seat this client is connected as, decided by the server from the
+     *  seat token. null for a spectator or an anonymous read. Authoritative:
+     *  a re-deal can move your seat, so this overrides whatever was stored at
+     *  join. Optional for a snapshot from an older server. */
+    you?: number | null;
+    /** Optional so a snapshot from a server without chat still type-checks. */
+    chat?: ChatMessage[];
 }
 
 export type TurnPhase = 
@@ -76,6 +111,11 @@ export interface GameState {
     castle_deck: Card[];
     discard_pile: Card[];
     played_cards: Card[];
+    /** Each play against the current enemy, still grouped as it was played.
+     *  Optional so a snapshot from an older server still type-checks. */
+    play_log?: PlayRecord[];
+    /** Whole-game history, oldest first. Optional for older snapshots. */
+    game_log?: LogEntry[];
     last_played: Card[] | null;
     last_discarded: Card[] | null;
     active_enemy: Enemy | null;
@@ -85,6 +125,9 @@ export interface GameState {
     solo_jesters: number;
     max_hand_size: number;
     last_enemy_fate: EnemyFate | null;
+    /** Yields taken in a row since the last card was played. Optional so a
+     *  snapshot written by an older server still type-checks. */
+    consecutive_yields?: number;
 }
 
 export type GameAction = 
@@ -95,4 +138,7 @@ export type GameAction =
     | { type: 'UseSoloJester' }
     | { type: 'Reset' }
     | { type: 'NewGame', payload: { num_players: number } }
-    | { type: 'SetName', payload: { seat: number, name: string } };
+    | { type: 'SetName', payload: { seat: number, name: string } }
+    // No seat: the server attributes the message to the socket's own
+    // authenticated seat, so a client can't post as anyone else.
+    | { type: 'SendChat', payload: { text: string } };

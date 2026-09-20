@@ -4,6 +4,10 @@ import HUD from './components/HUD';
 import Arena from './components/Arena';
 import HandArea from './components/HandArea';
 import ActionFooter from './components/ActionFooter';
+import GameLog from './components/GameLog';
+import Chat from './components/Chat';
+import ActionErrorToast from './components/ActionErrorToast';
+import { canRenderBoard } from './seatState';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -32,11 +36,13 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, reconnecting,
-        sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
+        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
+        sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
 
+    const [showLog, setShowLog] = useState(false);
+    const [showChat, setShowChat] = useState(false);
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
     const [showNewGame, setShowNewGame] = useState(false);
 
@@ -44,41 +50,49 @@ const App: React.FC = () => {
         if (playerName) localStorage.setItem('kingkiller_player_name', playerName);
     }, [playerName]);
 
+    // Keep clearing the badge while the panel is open, not just when it opens -
+    // otherwise messages arriving mid-read would stack up as "unread".
+    useEffect(() => {
+        if (showChat) markChatRead();
+        // markChatRead is rebuilt each render; chat.length is the real trigger.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [showChat, chat.length]);
+
     if (!gameId) {
         return (
-            <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-4 text-center overflow-hidden">
+            <div className="board-shell flex flex-col items-center justify-center bg-slate-900 text-white p-4 text-center overflow-y-auto">
                 <motion.h1 
                     initial={{ y: -50, opacity: 0 }} 
                     animate={{ y: 0, opacity: 1 }}
-                    className="text-6xl font-black mb-12 italic uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-purple-600"
+                    className="text-[clamp(2.25rem,11vw,4.5rem)] font-black mb-6 sm:mb-12 italic uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-purple-600"
                 >
                     KING KILLER
                 </motion.h1>
-                <div className="bg-slate-800 p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700">
-                    <h2 className="text-xl font-bold mb-6 text-slate-300">New Game</h2>
+                <div className="bg-slate-800 p-5 sm:p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700">
+                    <h2 className="text-lg sm:text-xl font-bold mb-4 sm:mb-6 text-slate-300">New Game</h2>
                     <input 
                         type="text" 
                         placeholder="YOUR NAME" 
                         value={playerName}
                         onChange={(e) => setPlayerName(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-3 px-4 text-center font-bold focus:ring-2 focus:ring-blue-500 outline-none text-sm mb-6" 
+                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-3 px-4 text-center font-bold focus:ring-2 focus:ring-blue-500 outline-none t-body mb-4 sm:mb-6" 
                         maxLength={20}
                     />
-                    <div className="grid grid-cols-2 gap-4 mb-10">
+                    <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-6 sm:mb-10">
                         {[1, 2, 3, 4].map(n => (
-                            <button key={n} onClick={() => createGame(n)} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-lg active:scale-95 transition-all text-lg">
+                            <button key={n} onClick={() => createGame(n)} className="bg-blue-600 hover:bg-blue-500 text-white font-black py-4 sm:py-5 rounded-2xl shadow-lg active:scale-95 transition-all text-base sm:text-lg">
                                 {n} Player{n > 1 ? 's' : ''}
                             </button>
                         ))}
                     </div>
-                    <div className="relative mb-6">
+                    <div className="relative mb-4 sm:mb-6">
                         <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-700"></div></div>
-                        <div className="relative flex justify-center text-sm"><span className="px-3 bg-slate-800 text-slate-500 font-bold uppercase tracking-widest">or join room</span></div>
+                        <div className="relative flex justify-center"><span className="t-label px-3 bg-slate-800 text-slate-500 font-bold uppercase tracking-widest">or join room</span></div>
                     </div>
                     <input 
                         type="text" 
                         placeholder="PASTE GAME LINK" 
-                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-5 px-4 text-center font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase text-lg" 
+                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-4 sm:py-5 px-4 text-center font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase text-base sm:text-lg" 
                         onKeyDown={(e) => { if (e.key === 'Enter') joinGame(e.currentTarget.value.trim()); }} 
                     />
                 </div>
@@ -86,11 +100,17 @@ const App: React.FC = () => {
         );
     }
 
-    if (!localGameState || myPlayerId === null) return (
-        <div className="flex flex-col items-center justify-center min-h-screen bg-slate-900 text-white p-4">
+    // `seatedPlayer` is null while the state is still arriving AND whenever the
+    // stored seat no longer exists on this table, which used to crash the board
+    // on `players[myPlayerId].hand`.
+    // Split so TypeScript still narrows localGameState for everything below;
+    // a boolean-returning helper can't do that on its own.
+    if (!localGameState
+        || !canRenderBoard(true, myPlayerId, seatedPlayer !== null, localGameState.players.length)) return (
+        <div className="board-shell flex flex-col items-center justify-center bg-slate-900 text-white p-4">
             <div className="animate-pulse flex flex-col items-center">
                 <div className="text-6xl mb-6">⚔️</div>
-                <div className="text-sm font-black uppercase tracking-widest text-slate-500 text-center leading-loose">Entering the Castle...</div>
+                <div className="t-label font-black uppercase tracking-widest text-slate-500 text-center leading-loose">Entering the Castle...</div>
             </div>
         </div>
     );
@@ -98,7 +118,7 @@ const App: React.FC = () => {
     const isDiscarding = damageNeeded > 0;
 
     return (
-        <div className="fixed inset-0 bg-slate-950 text-slate-100 grid grid-rows-[auto_1fr_auto] overflow-hidden max-w-6xl mx-auto font-sans">
+        <div className="board-shell bg-slate-950 text-slate-100 grid grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden max-w-6xl mx-auto font-sans">
             {/* HUD Row */}
             <HUD 
                 gameId={gameId}
@@ -109,7 +129,14 @@ const App: React.FC = () => {
                 copySuccess={copySuccess}
                 activeEffects={activeEffects}
                 reconnecting={reconnecting}
-                onMenuClick={exitToMenu}
+                currentTierEnemies={currentTierEnemies}
+                muted={muted}
+                isHost={isHost}
+                onMenuClick={() => exitToMenu()}
+                onToggleMute={toggleMute}
+                onLogClick={() => setShowLog(true)}
+                onChatClick={() => setShowChat(true)}
+                unreadChat={unreadChat}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
                 onNewGameClick={() => setShowNewGame(true)}
@@ -129,7 +156,7 @@ const App: React.FC = () => {
                 {isSpectator ? (
                     <div data-testid="spectator-bar" className="flex items-center justify-center gap-2 py-6 text-slate-400">
                         <span className="text-lg">👁</span>
-                        <span className="text-xs font-black uppercase tracking-widest">You're watching — new games can be started from the HUD</span>
+                        <span className="t-micro font-black uppercase tracking-widest text-center px-4">You're watching — new games can be started from the HUD</span>
                     </div>
                 ) : (
                     <>
@@ -144,9 +171,10 @@ const App: React.FC = () => {
                             enemySuit={localGameState.active_enemy?.card.suit || null}
                             isJesterActive={localGameState.active_enemy?.is_jester_active || false}
                             onCardClick={toggleCard}
-                            actualHand={localGameState.players[myPlayerId].hand}
+                            actualHand={seatedPlayer?.hand ?? []}
                             currentPlayerIndex={localGameState.current_player_index}
                             discardRemaining={discardRemaining}
+                            playerNames={localGameState.players.map(p => p.name)}
                         />
 
                         <ActionFooter 
@@ -156,6 +184,7 @@ const App: React.FC = () => {
                             discardRemaining={discardRemaining}
                             currentDiscardValue={currentDiscardValue}
                             isSolo={isSolo}
+                            canYield={canYield}
                             isImmuneWarning={isImmuneWarning}
                             phase={localGameState.phase}
                             players={localGameState.players}
@@ -168,35 +197,54 @@ const App: React.FC = () => {
                 )}
             </div>
 
+            <ActionErrorToast error={actionError} onDismiss={dismissActionError} />
+
             {/* Defeated enemy flying to its pile */}
             {defeatFlight && (
                 <FlightOverlay flight={defeatFlight} onDone={() => finishDefeatFlight(defeatFlight.id)} />
             )}
+
+            <AnimatePresence>
+                {showLog && <GameLog gameState={localGameState} onClose={() => setShowLog(false)} />}
+            </AnimatePresence>
+
+            <AnimatePresence>
+                {showChat && (
+                    <Chat
+                        chat={chat}
+                        myPlayerId={myPlayerId}
+                        onSend={sendChat}
+                        onClose={() => setShowChat(false)}
+                    />
+                )}
+            </AnimatePresence>
 
             {/* Global Overlays */}
             <AnimatePresence>
                 {localGameState.status !== 'InProgress' && showGameOver && (
                     <motion.div 
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-slate-950/80 flex items-center justify-center p-8 z-[200] backdrop-blur-sm text-center"
+                        className="fixed inset-0 bg-slate-950/80 flex items-center justify-center p-5 sm:p-8 z-[200] backdrop-blur-sm text-center overflow-y-auto"
                     >
                         <motion.div 
                             initial={{ scale: 0.9, y: 50 }} animate={{ scale: 1, y: 0 }}
-                            className="bg-slate-800/95 p-12 rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-slate-700 w-full max-w-sm relative"
+                            className="bg-slate-800/95 p-6 sm:p-12 rounded-[2rem] sm:rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-slate-700 w-full max-w-sm relative my-auto"
                         >
-                            <button onClick={() => setShowGameOver(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">View Board</button>
-                            <div className="text-8xl mb-8 animate-bounce">{localGameState.status === 'Won' ? '🏆' : '💀'}</div>
-                            <h2 className="text-5xl font-black mb-4 tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-white to-slate-400">
+                            <button onClick={() => setShowGameOver(false)} className="t-micro absolute -top-3 -right-2 sm:-top-4 sm:-right-4 bg-slate-700 hover:bg-slate-600 text-white font-black px-4 sm:px-6 py-2 sm:py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">View Board</button>
+                            <div className="text-[clamp(3rem,16vw,5rem)] mb-4 sm:mb-8 animate-bounce leading-none">{localGameState.status === 'Won' ? '🏆' : '💀'}</div>
+                            <h2 className="text-[clamp(2rem,10vw,3rem)] font-black mb-4 tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-white to-slate-400">
                                 {localGameState.status === 'Won' ? 'Victory' : 'Defeated'}
                             </h2>
                             {typeof localGameState.status === 'object' && 'Lost' in localGameState.status && (
-                                <p className="text-slate-300 mb-10 font-bold bg-black/30 p-5 rounded-2xl text-sm leading-relaxed border border-white/5">
-                                    {(localGameState.status as any).Lost}
+                                <p className="t-body text-slate-300 mb-6 sm:mb-10 font-bold bg-black/30 p-4 sm:p-5 rounded-2xl leading-relaxed border border-white/5">
+                                    {localGameState.status.Lost}
                                 </p>
                             )}
-                            <button onClick={restartTable} className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-blue-800 uppercase tracking-widest text-xs mb-4">Play Again</button>
-                            <button onClick={() => setShowNewGame(true)} className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-amber-800 uppercase tracking-widest text-xs mb-4">New Game</button>
-                            <button onClick={exitToMenu} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-6 rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest text-xs">Main Menu</button>
+                            <button onClick={restartTable} className="t-label w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-blue-800 uppercase tracking-widest mb-3 sm:mb-4">Play Again</button>
+                            {isHost && (
+                                <button onClick={() => setShowNewGame(true)} className="t-label w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-amber-800 uppercase tracking-widest mb-3 sm:mb-4">New Game</button>
+                            )}
+                            <button onClick={() => exitToMenu()} className="t-label w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest">Main Menu</button>
                         </motion.div>
                     </motion.div>
                 )}
@@ -213,7 +261,7 @@ const App: React.FC = () => {
                             initial={{ scale: 0.9, y: 50 }} animate={{ scale: 1, y: 0 }}
                             className="bg-slate-800/95 p-12 rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] border border-slate-700 w-full max-w-sm relative"
                         >
-                            <button onClick={() => setShowNewGame(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white text-[10px] font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">Close</button>
+                            <button onClick={() => setShowNewGame(false)} className="absolute -top-4 -right-4 bg-slate-700 hover:bg-slate-600 text-white t-micro font-black px-6 py-2.5 rounded-full border border-slate-600 shadow-xl uppercase">Close</button>
                             <h2 className="text-3xl font-black mb-2 tracking-tighter italic uppercase text-transparent bg-clip-text bg-gradient-to-b from-amber-300 to-amber-600">New Game</h2>
                             <p className="text-slate-400 text-xs font-bold mb-8 leading-relaxed">Deal a fresh game in this room. Everyone keeps their seats; extra members watch.</p>
                             <div className="grid grid-cols-2 gap-4">
@@ -223,7 +271,7 @@ const App: React.FC = () => {
                                     </button>
                                 ))}
                             </div>
-                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mt-8">Room ID: {gameId}</p>
+                            <p className="text-slate-500 t-micro font-black uppercase tracking-widest mt-8">Room ID: {gameId}</p>
                         </motion.div>
                     </motion.div>
                 )}
@@ -233,7 +281,8 @@ const App: React.FC = () => {
                 <motion.button 
                     initial={{ y: 100 }} animate={{ y: 0 }}
                     onClick={() => setShowGameOver(true)} 
-                    className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-blue-600 hover:bg-blue-500 text-white font-black px-10 py-5 rounded-full shadow-2xl z-[110] border-b-4 border-blue-800 uppercase text-xs tracking-widest animate-pulse"
+                    className="t-label fixed left-1/2 -translate-x-1/2 bg-blue-600 hover:bg-blue-500 text-white font-black px-8 sm:px-10 py-4 sm:py-5 rounded-full shadow-2xl z-[110] border-b-4 border-blue-800 uppercase tracking-widest animate-pulse"
+                    style={{ bottom: 'calc(var(--safe-b) + 3rem)' }}
                 >
                     Show Result
                 </motion.button>

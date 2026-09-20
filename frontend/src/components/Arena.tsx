@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { GameState, CombatEffect } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,10 +14,58 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
     // Only show warning if not in discard phase
     const showWarning = isImmuneWarning && !isDiscarding;
 
+    // Hover on desktop, tap on touch — `play_log` keeps every play against this
+    // enemy grouped as it was played, which `played_cards` flattens away.
+    const [showPlays, setShowPlays] = useState(false);
+    // play_log covers the current enemy; game_log spans the whole castle. Both
+    // are already on the state - this just lets the popover widen its scope
+    // rather than making you open the full log for it.
+    const [wholeGame, setWholeGame] = useState(false);
+    const playerLabel = (i: number) => gameState.players[i]?.name || `P${i + 1}`;
+
+    const currentEnemyPlays = gameState.play_log ?? [];
+    // The game log records every event; only the plays and yields belong here,
+    // and they carry the same (player, cards) shape play_log does.
+    const wholeGamePlays = (gameState.game_log ?? [])
+        .filter(e => (e.kind === 'Played' || e.kind === 'Yielded') && e.player !== null)
+        .map(e => ({ player: e.player as number, cards: e.cards }));
+    const playLog = wholeGame ? wholeGamePlays : currentEnemyPlays;
+
+    // `position: fixed` + a measured anchor, not `right-full` off the trigger.
+    // The trigger sits in a ~48-112px sidebar flush against the screen edge, so
+    // right-full anchored the popover's own right edge to that sidebar's left
+    // edge - on a narrow phone the popover (208-240px wide) then had nowhere
+    // to go but off the left of the viewport, with nothing to pull it back in.
+    const triggerRef = useRef<HTMLDivElement>(null);
+    const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
+
+    useEffect(() => {
+        if (!showPlays || !triggerRef.current) return;
+        const measure = () => {
+            const rect = triggerRef.current!.getBoundingClientRect();
+            const margin = 8;
+            const width = Math.min(240, window.innerWidth - margin * 2);
+            // Prefer opening to the left of the trigger (its usual side), but
+            // clamp so it can never run past either edge of the viewport.
+            const left = Math.min(
+                Math.max(margin, rect.left - width - margin),
+                window.innerWidth - width - margin
+            );
+            const maxHeight = window.innerHeight - rect.top - margin;
+            setPopoverStyle({ left, top: rect.top, width, maxHeight });
+        };
+        measure();
+        // The trigger can move (orientation change, resize, or the arena
+        // reflowing under it), so keep the popover pinned to it while open.
+        window.addEventListener('resize', measure);
+        return () => window.removeEventListener('resize', measure);
+    }, [showPlays]);
+
     return (
-        <div className="flex-1 flex flex-row items-center justify-center gap-4 lg:gap-12 relative min-h-0 py-4 w-full max-w-6xl mx-auto px-4 overflow-hidden">
-            {/* Left: In Play Sidebar */}
-            <div className="hidden md:flex flex-col items-center gap-4 flex-shrink-0 w-28">
+        <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
+            {/* Left: In Play. Kept as a flex sibling (not an overlay) at every
+                width so it can never cover the board; it just gets narrower. */}
+            <div className="flex flex-col items-center justify-center gap-2 sm:gap-3 flex-shrink-0 w-12 sm:w-16 md:w-28">
                 <AnimatePresence>
                     {gameState.played_cards.length > 0 && (
                         <motion.div 
@@ -25,21 +73,45 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             animate={{ x: 0, opacity: 1 }} 
                             exit={{ x: -50, opacity: 0 }}
                             data-testid="in-play-area" 
-                            className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-3 rounded-2xl flex flex-col items-center shadow-xl"
+                            className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-3 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full"
                         >
-                            <span className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">In Play</span>
+                            <span className="t-micro font-black text-blue-400 uppercase tracking-widest mb-0.5 md:mb-1 text-center leading-tight">In Play</span>
                             <div className="flex flex-col items-center">
-                                <span className="text-2xl font-black text-white">{gameState.played_cards.length}</span>
-                                <span className="text-[8px] opacity-50 uppercase font-bold">Cards</span>
+                                <span className="t-stat font-black text-white leading-none">{gameState.played_cards.length}</span>
+                                <span className="t-micro opacity-50 uppercase font-bold hidden md:block">Cards</span>
                             </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
+                {/* What the last player threw away to soak the enemy's hit.
+                    The core has tracked this all along (and clears it when a
+                    Hearts shuffle invalidates it) but nothing ever showed it. */}
+                <AnimatePresence>
+                    {gameState.last_discarded && gameState.last_discarded.length > 0 && (
+                        <motion.div
+                            initial={{ x: -50, opacity: 0 }}
+                            animate={{ x: 0, opacity: 1 }}
+                            exit={{ x: -50, opacity: 0 }}
+                            data-testid="last-discarded-area"
+                            className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full"
+                        >
+                            <span className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1 text-center leading-tight">Discarded</span>
+                            <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
+                                {gameState.last_discarded.slice(0, 4).map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
+                            </div>
+                            {gameState.last_discarded.length > 4 && (
+                                <span className="t-micro font-black text-slate-500 mt-0.5">+{gameState.last_discarded.length - 4}</span>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>
             </div>
 
-            {/* Center: Active Enemy */}
-            {/* Increased pt to 8 to prevent ! clipping */}
-            <div data-testid="enemy-area" className="flex flex-col items-center justify-center gap-4 flex-1 h-full max-h-[50vh] relative pt-8">
+            {/* Center: Active Enemy. The card region is a flex child with
+                min-h-0, so the card is sized by whatever height this row
+                actually got rather than by a guessed vh fraction. */}
+            <div data-testid="enemy-area" className="flex flex-col items-center justify-center gap-2 sm:gap-3 flex-1 min-w-0 min-h-0 relative pt-5 sm:pt-7">
                 {gameState.active_enemy ? (
                     <>
                         <motion.div 
@@ -48,18 +120,20 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             animate={{ opacity: 1, y: 0, scale: 1 }} 
                             transition={{ type: 'spring', stiffness: 420, damping: 32 }}
                             data-testid="enemy-card"
-                            className="relative h-[70%] max-h-[40vh] group"
+                            className="relative flex-1 min-h-0 flex items-center justify-center w-full group"
                         >
                             <div className="absolute inset-0 bg-red-500/20 blur-[60px] rounded-full scale-150 -z-10 group-hover:bg-red-500/30 transition-colors duration-500"></div>
                             
-                            <Card card={gameState.active_enemy.card} className="h-full w-auto aspect-[5/7] max-h-full relative z-10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.7)] border border-white/10" />
+                            {/* object-contain inside means a narrow column letterboxes
+                                the art instead of stretching it. */}
+                            <Card card={gameState.active_enemy.card} className="h-full w-auto max-w-full relative z-10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.7)] border border-white/10" />
                             
                             {/* Immunity Warning - Anchored to Card */}
                             {showWarning && (
                                 <motion.div 
                                     animate={{ scale: [1, 1.2, 1], rotate: [0, 5, -5, 0] }} 
                                     transition={{ repeat: Infinity, duration: 2 }} 
-                                    className="absolute -top-6 left-1/2 -translate-x-1/2 bg-red-600 text-white font-black rounded-full w-10 h-10 flex items-center justify-center border-4 border-slate-900 z-[60] shadow-2xl text-2xl"
+                                    className="absolute -top-1 left-1/2 -translate-x-1/2 bg-red-600 text-white font-black rounded-full w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center border-4 border-slate-900 z-[60] shadow-2xl t-stat leading-none"
                                 >
                                     !
                                 </motion.div>
@@ -69,27 +143,27 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                                 <motion.div 
                                     initial={{ opacity: 0, y: 10 }} 
                                     animate={{ opacity: 1, y: 0 }}
-                                    className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-purple-600 px-4 py-1 rounded-full text-[10px] font-black border-2 border-purple-400 shadow-2xl z-50 whitespace-nowrap"
+                                    className="absolute bottom-0 left-1/2 -translate-x-1/2 bg-purple-600 px-2 sm:px-4 py-0.5 sm:py-1 rounded-full t-micro font-black border-2 border-purple-400 shadow-2xl z-50 whitespace-nowrap"
                                 >
                                     IMMUNITY CLEARED
                                 </motion.div>
                             )}
                         </motion.div>
                         
-                        <div className="flex justify-center gap-8 relative z-20 flex-shrink-0 h-16 w-full">
-                            <div className="bg-slate-900/80 backdrop-blur-md px-6 py-2 rounded-2xl border border-red-500/30 flex flex-col items-center min-w-[100px] shadow-2xl relative">
-                                <span className="text-[10px] text-red-400 font-black uppercase tracking-tighter mb-0.5">Health</span>
-                                <span className="text-2xl font-black text-white">{gameState.active_enemy.current_health}</span>
+                        <div className="flex justify-center gap-3 sm:gap-8 relative z-20 flex-shrink-0 w-full">
+                            <div className="bg-slate-900/80 backdrop-blur-md px-3 sm:px-6 py-1 sm:py-2 rounded-xl sm:rounded-2xl border border-red-500/30 flex flex-col items-center min-w-[4.5rem] sm:min-w-[100px] shadow-2xl relative">
+                                <span className="t-micro text-red-400 font-black uppercase tracking-tighter">Health</span>
+                                <span className="t-stat font-black text-white leading-none">{gameState.active_enemy.current_health}</span>
                                 <AnimatePresence mode="popLayout">
                                     {activeEffects.filter(e => e.type === 'damage').map(e => (
                                         <motion.div 
                                             key={e.id} 
-                                            initial={{ x: 20, opacity: 0 }} 
-                                            animate={{ x: 60, opacity: 1 }} 
-                                            exit={{ x: 80, opacity: 0 }} 
-                                            className="absolute left-full top-1/2 -translate-y-1/2 ml-2 pointer-events-none"
+                                            initial={{ x: 10, opacity: 0 }} 
+                                            animate={{ x: 30, opacity: 1 }} 
+                                            exit={{ x: 45, opacity: 0 }} 
+                                            className="absolute left-full top-1/2 -translate-y-1/2 ml-1 pointer-events-none"
                                         >
-                                            <span className="text-3xl font-black text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)] whitespace-nowrap">
+                                            <span className="t-stat font-black text-red-500 drop-shadow-[0_0_15px_rgba(239,68,68,0.5)] whitespace-nowrap">
                                                 {e.value} ❤️
                                             </span>
                                         </motion.div>
@@ -97,24 +171,24 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                                 </AnimatePresence>
                             </div>
 
-                            <div className="bg-slate-900/80 backdrop-blur-md px-6 py-2 rounded-2xl border border-orange-500/30 flex flex-col items-center min-w-[100px] shadow-2xl relative">
-                                <span className="text-[10px] text-orange-400 font-black uppercase tracking-tighter mb-0.5">Attack</span>
-                                <div className="flex items-baseline gap-2">
+                            <div className="bg-slate-900/80 backdrop-blur-md px-3 sm:px-6 py-1 sm:py-2 rounded-xl sm:rounded-2xl border border-orange-500/30 flex flex-col items-center min-w-[4.5rem] sm:min-w-[100px] shadow-2xl relative">
+                                <span className="t-micro text-orange-400 font-black uppercase tracking-tighter">Attack</span>
+                                <div className="flex items-baseline gap-1.5">
                                   {gameState.shield_value > 0 && (
-                                    <span className="text-sm line-through opacity-40 decoration-2 text-white">{gameState.active_enemy.base_attack}</span>
+                                    <span className="t-label line-through opacity-40 decoration-2 text-white">{gameState.active_enemy.base_attack}</span>
                                   )}
-                                  <span className="text-2xl font-black text-white">{Math.max(0, gameState.active_enemy.base_attack - gameState.shield_value)}</span>
+                                  <span className="t-stat font-black text-white leading-none">{Math.max(0, gameState.active_enemy.base_attack - gameState.shield_value)}</span>
                                 </div>
                                 <AnimatePresence mode="popLayout">
                                     {activeEffects.filter(e => e.type === 'shield').map(e => (
                                         <motion.div 
                                             key={e.id} 
-                                            initial={{ x: 20, opacity: 0 }} 
-                                            animate={{ x: 60, opacity: 1 }} 
-                                            exit={{ x: 80, opacity: 0 }} 
-                                            className="absolute left-full top-1/2 -translate-y-1/2 ml-2 pointer-events-none"
+                                            initial={{ x: 10, opacity: 0 }} 
+                                            animate={{ x: 30, opacity: 1 }} 
+                                            exit={{ x: 45, opacity: 0 }} 
+                                            className="absolute left-full top-1/2 -translate-y-1/2 ml-1 pointer-events-none"
                                         >
-                                            <span className="text-3xl font-black text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.5)] whitespace-nowrap">
+                                            <span className="t-stat font-black text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.5)] whitespace-nowrap">
                                                 {e.value} 🛡️
                                             </span>
                                         </motion.div>
@@ -127,7 +201,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                     <motion.div 
                         initial={{ scale: 0.8, opacity: 0 }} 
                         animate={{ scale: 1, opacity: 1 }}
-                        className="text-6xl font-black text-green-500 italic drop-shadow-[0_0_40px_rgba(34,197,94,0.4)] uppercase tracking-tighter"
+                        className="text-[clamp(2rem,9vw,4rem)] font-black text-green-500 italic drop-shadow-[0_0_40px_rgba(34,197,94,0.4)] uppercase tracking-tighter"
                     >
                         Victory!
                     </motion.div>
@@ -135,20 +209,64 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
             </div>
 
             {/* Right: Last Play Sidebar */}
-            <div className="hidden md:flex flex-col items-center gap-4 flex-shrink-0 w-28">
+            <div className="flex flex-col items-center justify-center gap-4 flex-shrink-0 w-12 sm:w-16 md:w-28">
                 <AnimatePresence>
                     {gameState.last_played && (
                         <motion.div 
+                            ref={triggerRef}
                             initial={{ x: 50, opacity: 0 }} 
                             animate={{ x: 0, opacity: 1 }} 
                             exit={{ x: 50, opacity: 0 }}
                             data-testid="previous-play-area" 
-                            className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-2 rounded-2xl flex flex-col items-center shadow-xl"
+                            onMouseEnter={() => setShowPlays(true)}
+                            onMouseLeave={() => setShowPlays(false)}
+                            onClick={() => setShowPlays(v => !v)}
+                            className={`bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full relative ${playLog.length > 0 ? 'cursor-pointer hover:border-slate-500' : ''}`}
                         >
-                            <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-2 text-center">Last Play</span>
-                            <div className="flex gap-1 flex-wrap justify-center max-w-[80px]">
-                                {gameState.last_played.map((c) => <Card key={c.id} card={c} className="w-8 h-11 shadow-lg" />)}
-                            </div>
+                            <span className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1 text-center leading-tight">
+                                Last Play{playLog.length > 0 ? ` (${playLog.length})` : ''}
+                            </span>
+
+                            {/* Every play so far against this enemy, newest first. */}
+                            {showPlays && playLog.length > 0 && (
+                                <div
+                                    data-testid="play-log-popover"
+                                    style={{ position: 'fixed', ...popoverStyle }}
+                                    className="z-[130] overflow-y-auto bg-slate-950/95 backdrop-blur-md border border-slate-700 rounded-xl shadow-2xl p-2 text-left"
+                                >
+                                    <div className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1.5">
+                                        {wholeGame ? 'Whole game' : 'This enemy'} — {playLog.length} play{playLog.length === 1 ? '' : 's'}
+                                    </div>
+                                    <button
+                                        onClick={(e) => { e.stopPropagation(); setWholeGame(v => !v); }}
+                                        className="t-micro w-full mb-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full py-1 font-black uppercase tracking-widest text-slate-300"
+                                    >
+                                        {wholeGame ? 'Show this enemy only' : `Show whole game (${wholeGamePlays.length})`}
+                                    </button>
+                                    <div className="flex flex-col gap-1.5">
+                                        {playLog.slice().reverse().map((rec, i) => (
+                                            <div key={playLog.length - 1 - i} className="flex items-center gap-1.5 border-t border-white/5 pt-1.5 first:border-0 first:pt-0">
+                                                <span className="t-micro font-black text-slate-500 w-10 shrink-0 truncate">{playerLabel(rec.player)}</span>
+                                                {rec.cards.length === 0 ? (
+                                                    <span className="t-micro font-black text-amber-400 uppercase tracking-widest">Yield</span>
+                                                ) : (
+                                                    <div className="flex gap-0.5 flex-wrap">
+                                                        {rec.cards.map(c => <Card key={c.id} card={c} className="w-5 sm:w-6 shadow" />)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {gameState.last_played.length === 0 ? (
+                                /* An empty play is a yield. */
+                                <span className="t-label font-black text-amber-400 uppercase tracking-widest text-center">Yield</span>
+                            ) : (
+                                <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
+                                    {gameState.last_played.map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
+                                </div>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>
