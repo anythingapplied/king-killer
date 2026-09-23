@@ -142,8 +142,8 @@ struct ChatMessage {
     /// Seat of the sender, taken from the socket's authenticated seat - never
     /// from the message body.
     seat: usize,
-    /// The sender's name as it stood when they sent it, so a later rename
-    /// doesn't silently rewrite history.
+    /// The sender's current name. Stamped at send time and rewritten by
+    /// `SetName`, so a rename is reflected across the whole log.
     name: String,
     text: String,
     /// Unix epoch millis. Clients format it; the server just stamps it.
@@ -200,7 +200,7 @@ impl Room {
 
 /// What clients receive: the shared game plus the full room roster, so
 /// spectators (members seated beyond the player count) are visible too.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Debug)]
 struct RoomSnapshot {
     id: String,
     game: GameState,
@@ -320,8 +320,8 @@ fn reassign_seats(room: &mut Room, player_count: usize) {
     // Leaving those pointing at a seat number whose occupant just changed
     // would re-attribute old messages to whoever inherited the seat - the
     // client decides which messages are "yours" by exactly this comparison.
-    // The stored `name` is still the one from send time; only the identity
-    // pointer follows its author.
+    // Keeping this pointer accurate is also what lets `SetName` rename an
+    // author's past messages.
     for message in room.chat.iter_mut() {
         if let Some(&new_seat) = moved.get(&message.seat) {
             message.seat = new_seat;
@@ -631,7 +631,7 @@ struct CreateGameRequest {
     player_name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct GameResponse {
     id: String,
     state: RoomSnapshot,
@@ -663,7 +663,7 @@ enum GameAction {
 /// Error body for a failed REST call, so a non-2xx status carries the same
 /// kind of explanation `ServerMessage::Error` already gives on the socket -
 /// the reason a request was refused, not just that it was.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct ApiError {
     message: String,
 }
@@ -754,7 +754,7 @@ struct JoinRequest {
     name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct JoinResponse {
     seat_index: usize,
     /// The seat's secret. The client stores it and presents it on the socket;
@@ -781,6 +781,7 @@ async fn join_game_seat(
         let (seat, is_player, token) = claim_seat(room, payload.name);
         let response = JoinResponse {
             seat_index: seat,
+            token,
             spectator: !is_player,
         };
         (response, room.clone())
@@ -906,6 +907,12 @@ fn apply_action(room: &mut Room, action: &GameAction, seat: Option<usize>) -> Re
             }
             if let Some(member) = room.members.iter_mut().find(|m| m.seat == *seat) {
                 member.name = name.clone();
+            }
+            // Chat names follow the author, so a rename shows on their past
+            // messages too. `message.seat` tracks the author across re-deals
+            // (see reassign_seats), so it identifies them reliably.
+            for message in room.chat.iter_mut().filter(|m| m.seat == *seat) {
+                message.name = name.clone();
             }
             Ok(())
         }
@@ -1718,7 +1725,8 @@ mod tests {
         // includes themselves. should_apply only checks that the chooser is
         // the current player; it does not, and must not, care which index
         // they picked - that legality lives in choose_next_player itself.
-        let room = host_room();
+        let mut room = host_room();
+        room.game.current_player_index = 0; // new() randomises the starting seat
         for target in 0..room.members.len() {
             assert!(
                 should_apply(&GameAction::ChooseNextPlayer { index: target }, Some(0), Some(&room)),
@@ -1996,14 +2004,14 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_does_not_rewrite_chat_history() {
+    fn a_rename_is_reflected_across_the_chat_log() {
         let mut room = chat_room();
         room.push_chat(1, "before");
-        if let Some(m) = room.members.iter_mut().find(|m| m.seat == 1) {
-            m.name = "Robert".to_string();
-        }
+        room.push_chat(0, "from alice");
+        apply_action(&mut room, &GameAction::SetName { seat: 1, name: "Robert".into() }, Some(1)).unwrap();
         room.push_chat(1, "after");
-        assert_eq!(room.chat[0].name, "Bob");
-        assert_eq!(room.chat[1].name, "Robert");
+        assert_eq!(room.chat[0].name, "Robert", "past messages take the new name");
+        assert_eq!(room.chat[1].name, "Alice", "other seats are untouched");
+        assert_eq!(room.chat[2].name, "Robert");
     }
 }

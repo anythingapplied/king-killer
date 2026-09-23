@@ -31,11 +31,18 @@ for (const res of resolutions) {
         elements.push({ name: 'PrevPlay', selector: '[data-testid="previous-play-area"]' });
     }
 
-    // Check children within the enemy-area specifically for internal overlap
-    const enemyChildrenSelectors = ['[data-testid="enemy-area"] .relative.group', '[data-testid="enemy-area"] .flex.justify-center'];
-    for (let i = 0; i < enemyChildrenSelectors.length; i++) {
-        if (await page.locator(enemyChildrenSelectors[i]).count() > 0) {
-            elements.push({ name: `EnemyChild-${i}`, selector: enemyChildrenSelectors[i] });
+    // Check children within the enemy-area specifically for internal overlap:
+    // the enemy card must not run into its Health/Attack row. The card's own
+    // wrapper also carries `flex justify-center` and is a sibling of the stats
+    // row, so it has to be excluded explicitly - otherwise the stats selector
+    // matches the card and the test compares the card with itself.
+    const enemyChildren = [
+        { name: 'EnemyChild-card', selector: '[data-testid="enemy-card"]' },
+        { name: 'EnemyChild-stats', selector: '[data-testid="enemy-area"] > .flex.justify-center:not([data-testid="enemy-card"])' },
+    ];
+    for (const child of enemyChildren) {
+        if (await page.locator(child.selector).count() > 0) {
+            elements.push(child);
         }
     }
 
