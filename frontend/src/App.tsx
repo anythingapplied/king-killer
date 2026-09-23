@@ -36,7 +36,7 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
+        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
@@ -149,6 +149,10 @@ const App: React.FC = () => {
                 activeEffects={activeEffects}
                 isImmuneWarning={isImmuneWarning}
                 isDiscarding={isDiscarding}
+                // Only while the defeated enemy is held in place; once its card
+                // takes off for the pile the preview would be left floating
+                // over an empty spot.
+                killingBlow={defeatFlight?.flying ? null : killingBlow}
             />
 
             {/* Controls Row */}

@@ -15,8 +15,9 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? (IS_LOCAL ? `http://${window.l
 const WS_BASE = import.meta.env.VITE_WS_BASE ?? (IS_LOCAL ? `ws://${window.location.hostname}:3000` : '');
 
 // Timings for the defeat flow (in ms). The card must be shown long enough for
-// the killing blow to land before it flies off to its pile.
-const DEFEAT_BLOW_MS = 450;
+// the killing blow to land - and for the cards that dealt it (the
+// "Defeated by" preview) to be read - before it flies off to its pile.
+const DEFEAT_BLOW_MS = 1100;
 const DEFEAT_FLIGHT_MS = 650;
 
 export interface FlightBox {
@@ -46,6 +47,16 @@ export interface DefeatFlight {
     to?: FlightBox; // screen rect the card lands on
 }
 
+/**
+ * The play that just defeated the enemy, shown over it while the board holds
+ * the defeat. The board lags the server during that hold, so the in-play area
+ * still shows the old state - without this the winning cards were never seen.
+ */
+export interface KillingBlow {
+    cards: CardType[];
+    player: number;
+}
+
 export const useGameLogic = () => {
   const [gameId, setGameId] = useState<string | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<number | null>(null);
@@ -56,6 +67,7 @@ export const useGameLogic = () => {
   const [showGameOver, setShowGameOver] = useState(true);
   const [activeEffects, setActiveEffects] = useState<CombatEffect[]>([]);
   const [defeatFlight, setDefeatFlight] = useState<DefeatFlight | null>(null);
+  const [killingBlow, setKillingBlow] = useState<KillingBlow | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const gameConnectedRef = useRef(false);
   const intentionalCloseRef = useRef(false);
@@ -123,6 +135,9 @@ export const useGameLogic = () => {
   const commitLocalState = useCallback((gs: GameState | null) => {
     localStateRef.current = gs;
     setLocalGameState(gs);
+    // The preview belongs to the held, pre-defeat board; once the board moves
+    // on (flight landed, final king committed, new deal, exit) it is stale.
+    setKillingBlow(null);
   }, []);
 
   useEffect(() => () => {
@@ -249,6 +264,12 @@ export const useGameLogic = () => {
     
     const isDefeat = prev?.active_enemy && !next.active_enemy;
     const isEnemySwap = prev?.active_enemy && next.active_enemy && prev.active_enemy.card.id !== next.active_enemy.card.id;
+
+    if ((isDefeat || isEnemySwap) && next.last_played && next.last_played.length > 0) {
+        // `prev` is the board the killing play was made on, so its current
+        // player is the one who made it - `next` has already moved the turn on.
+        setKillingBlow({ cards: next.last_played, player: prev!.current_player_index });
+    }
 
     if (isDefeat) {
         // Win over the final king: no next enemy, so there is nothing to fly to.
@@ -752,7 +773,7 @@ export const useGameLogic = () => {
 
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-    defeatFlight, finishDefeatFlight, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
+    defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
     chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),

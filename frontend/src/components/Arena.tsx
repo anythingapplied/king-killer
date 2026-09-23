@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { GameState, CombatEffect } from '../types';
+import type { KillingBlow } from '../hooks/useGameLogic';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -8,9 +9,11 @@ interface ArenaProps {
     activeEffects: CombatEffect[];
     isImmuneWarning: boolean;
     isDiscarding: boolean;
+    /** The play that just defeated the enemy, while the board holds on it. */
+    killingBlow?: KillingBlow | null;
 }
 
-const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding }) => {
+const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding, killingBlow }) => {
     // Only show warning if not in discard phase
     const showWarning = isImmuneWarning && !isDiscarding;
 
@@ -139,6 +142,33 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                                 </motion.div>
                             )}
                             
+                            {/* "Defeated by": the winning play, over the enemy it
+                                just beat, for the moment before the card flies to
+                                its pile. Sits above the Immunity badge (z-50) so a
+                                Jester-cleared enemy's label can't cover it. */}
+                            <AnimatePresence>
+                                {killingBlow && (
+                                    <motion.div
+                                        key="killing-blow"
+                                        initial={{ opacity: 0, y: 12, scale: 0.9 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, scale: 0.9 }}
+                                        transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+                                        data-testid="killing-blow"
+                                        className="absolute bottom-2 left-1/2 -translate-x-1/2 z-[55] bg-slate-950/90 backdrop-blur-md border border-green-500/50 rounded-xl sm:rounded-2xl px-2 sm:px-3 py-1 sm:py-1.5 flex flex-col items-center gap-1 shadow-2xl max-w-[95%]"
+                                    >
+                                        <span className="t-micro font-black text-green-400 uppercase tracking-widest whitespace-nowrap">
+                                            Defeated by {playerLabel(killingBlow.player)}
+                                        </span>
+                                        <div className="flex gap-1 flex-wrap justify-center">
+                                            {killingBlow.cards.map(c => (
+                                                <Card key={c.id} card={c} className="thumb-card shadow-lg" />
+                                            ))}
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+
                             {gameState.active_enemy.is_jester_active && (
                                 <motion.div 
                                     initial={{ opacity: 0, y: 10 }} 
