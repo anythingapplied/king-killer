@@ -87,6 +87,9 @@ test('a defeated enemy card flies from the board to its pile', async ({ page }) 
         const landsInTavern = dealt === enemyHealth(enemy);
 
         // Sample from before the click so we catch the overlay's first frame.
+        // The window covers the "Defeated by" hold (DEFEAT_BLOW_MS, 1.1s)
+        // plus the ~0.55s flight with room for the socket round trip, so the
+        // last sample is the landed card rather than one caught mid-flight.
         const samples = page.evaluate(() => new Promise<Array<{ t: number; x: number | null; y: number | null; w: number | null; h: number | null }>>((resolve) => {
             const arr: Array<{ t: number; x: number | null; y: number | null; w: number | null; h: number | null }> = [];
             const t0 = performance.now();
@@ -95,16 +98,28 @@ test('a defeated enemy card flies from the board to its pile', async ({ page }) 
                 const el = document.querySelector('[data-testid="flight-overlay"]');
                 const r = el ? el.getBoundingClientRect() : null;
                 arr.push({ t: Math.round(t - t0), x: r ? Math.round(r.x) : null, y: r ? Math.round(r.y) : null, w: r ? Math.round(r.width) : null, h: r ? Math.round(r.height) : null });
-                if (t - t0 > 1800) { cancelAnimationFrame(raf); resolve(arr); }
+                if (t - t0 > 2800) { cancelAnimationFrame(raf); resolve(arr); }
                 else raf = requestAnimationFrame(step);
             };
             raf = requestAnimationFrame(step);
         }));
 
+        const killingAlts: string[] = [];
+        for (const i of combo) killingAlts.push(await cardAlt(page, '[data-testid="hand-area"] img', i));
         for (const i of combo) await page.locator('[data-testid="hand-area"] img').nth(i).click();
         await page.locator('button:has-text("Attack")').click();
 
+        // Before the card flies, the winning play is shown over the enemy it
+        // beat - exactly the cards that were played, and nothing else.
+        const killingBlow = page.locator('[data-testid="killing-blow"]');
+        await expect(killingBlow).toBeVisible({ timeout: 4000 });
+        const shownAlts = await killingBlow.locator('img').evaluateAll(imgs => imgs.map(i => i.getAttribute('alt') ?? ''));
+        expect([...shownAlts].sort()).toEqual([...killingAlts].sort());
+
         await page.waitForSelector('[data-testid="flight-overlay"]', { timeout: 6000 });
+        // Once the card takes off, the preview is gone rather than left
+        // floating over the spot the enemy just left.
+        await expect(killingBlow).toBeHidden({ timeout: 2000 });
         const overlaySamples = (await samples).filter(s => s.x !== null);
         expect(overlaySamples.length, 'overlay should be visible across many frames').toBeGreaterThan(10);
 

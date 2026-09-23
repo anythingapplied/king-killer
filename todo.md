@@ -8,8 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
-      before cleanup. (`last_played` is already on the state.)
 
 ### Testing & infra
 
@@ -166,6 +164,11 @@ open are now closed, and a couple that read as closed turned out to be partial.
       sorted hand slot, starting at the deck's size. Measured in a layout
       effect before paint; cards already in hand on first render (the deal, a
       reconnect) don't animate.
+- [x] **Enemy defeat preview**: a "Defeated by" panel shows the killing play
+      over the beaten enemy before its card flies to the pile (the hold is now
+      1.1s, up from 0.45s). The board lags the server during that hold, so the
+      in-play area still showed the old state and the winning cards were never
+      seen.
 
 ### Tests & docs
 

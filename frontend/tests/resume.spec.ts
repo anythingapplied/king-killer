@@ -63,26 +63,40 @@ const tavernText = async (page: Page) => (await page.locator('[data-testid="tave
 const enemyAlt = async (page: Page) =>
     (await page.locator('[data-testid="enemy-card"] img').first().getAttribute('alt')) ?? '';
 
-// The hand renders through AnimatePresence, so a played card stays in the DOM
-// until its exit animation finishes (and a drawn card appears before it lands).
-// A raw count taken mid-animation can be off by one; wait until it holds still.
-const settledHandCount = async (page: Page, stableMs = 750, timeoutMs = 10_000) => {
-    const hand = page.locator('[data-testid="hand-area"] img');
+// Polls `read` until its value has held still for `stableMs`, then returns it.
+const settled = async <T,>(page: Page, what: string, read: () => Promise<T>, stableMs = 750, timeoutMs = 10_000): Promise<T> => {
     const deadline = Date.now() + timeoutMs;
-    let last = await hand.count();
+    let last = await read();
     let stableSince = Date.now();
     while (Date.now() < deadline) {
         await page.waitForTimeout(100);
-        const now = await hand.count();
-        if (now !== last) {
+        const now = await read();
+        if (JSON.stringify(now) !== JSON.stringify(last)) {
             last = now;
             stableSince = Date.now();
         } else if (Date.now() - stableSince >= stableMs) {
             return now;
         }
     }
-    throw new Error(`hand count never settled within ${timeoutMs}ms (last seen ${last})`);
+    throw new Error(`${what} never settled within ${timeoutMs}ms (last seen ${JSON.stringify(last)})`);
 };
+
+// The hand renders through AnimatePresence, so a played card stays in the DOM
+// until its exit animation finishes (and a drawn card appears before it lands).
+// A raw count taken mid-animation can be off by one; wait until it holds still.
+const settledHandCount = (page: Page) =>
+    settled(page, 'hand count', () => page.locator('[data-testid="hand-area"] img').count());
+
+// Everything the resume check compares, read together once it has all stopped
+// moving. The wait for a play fires on the *first* sign of change, and the
+// parts of the board don't reliably land in the same frame - a Diamonds draw
+// was once caught with the Tavern still showing its pre-play count.
+const settledBoard = (page: Page) =>
+    settled(page, 'board', async () => ({
+        tavern: await tavernText(page),
+        enemy: await enemyAlt(page),
+        hand: await page.locator('[data-testid="hand-area"] img').count(),
+    }));
 
 test('board resumes seamlessly from persisted state across an idle restart', async ({ page }) => {
     test.setTimeout(90_000);
@@ -108,13 +122,25 @@ test('board resumes seamlessly from persisted state across an idle restart', asy
 
         // Play a card that is guaranteed to damage the enemy (different suit),
         // so a definite state change is persisted and can be verified on resume.
+        // Take the *lowest* such card so the play can never be lethal: a kill
+        // (e.g. 10 of Clubs, doubled, against a 20-health Jack) holds the old
+        // enemy on screen for the defeat preview and flight, so the "after
+        // play" board recorded below would be the defeated enemy, not the
+        // persisted one. This test is about surviving a restart, not defeats.
         const enemySuit = enemyAlt0[enemyAlt0.length - 5]; // alt is e.g. "JH.svg"
+        const cardValue = (alt: string) => {
+            const rank = alt.slice(0, alt.length - 5);
+            return ({ A: 1, J: 10, Q: 15, K: 20 } as Record<string, number>)[rank] ?? Number(rank);
+        };
         const handCards = page.locator('[data-testid="hand-area"] img');
         const n = await handCards.count();
         let chosen = -1;
+        let chosenValue = Infinity;
         for (let i = 0; i < n; i++) {
             const a = (await handCards.nth(i).getAttribute('alt')) || '';
-            if (!a.endsWith(`${enemySuit}.svg`)) { chosen = i; break; }
+            if (a.startsWith('Joker') || a.endsWith(`${enemySuit}.svg`)) continue;
+            const v = cardValue(a);
+            if (v < chosenValue) { chosen = i; chosenValue = v; }
         }
         expect(chosen).toBeGreaterThanOrEqual(0);
 
@@ -137,11 +163,11 @@ test('board resumes seamlessly from persisted state across an idle restart', asy
             { timeout: 8000 },
         );
 
-        const tavernAfterPlay = await tavernText(page);
-        const enemyAfterPlay = await enemyAlt(page);
-        // The wait above fires on the *first* sign of change, which can be
-        // while the played card is still animating out of the hand.
-        const handAfterPlay = await settledHandCount(page);
+        const {
+            tavern: tavernAfterPlay,
+            enemy: enemyAfterPlay,
+            hand: handAfterPlay,
+        } = await settledBoard(page);
 
         // Kill the server — exactly what the idle shutdown does in production.
         await stopApi(api);
