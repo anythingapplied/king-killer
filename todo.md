@@ -11,11 +11,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Testing & infra
 
-- [ ] **The axum handlers themselves have no tests.** The socket's decisions
-      are now pure functions (`should_apply`, `action_type`, `apply_action`)
-      and are covered, so `handle_socket` is down to frame reading, locking,
-      persist and broadcast. `create_game` and `join_game_seat` are still
-      untested, and testing any of them needs an axum test client.
 - [ ] **Playwright needs a running backend.** The layout and join specs assume
       `localhost:3000` is up. Worth a fixture that boots the server.
 - [ ] **Background-tab alert on mobile.** iOS suspends audio for backgrounded
@@ -172,10 +167,18 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Tests & docs
 
-- [x] Rust: 37 rules-engine tests + 3 shared-fixture tests; 60 server tests
+- [x] Rust: 37 rules-engine tests + 3 shared-fixture tests; 71 server tests
       covering persistence, seats, legacy seat reclaim, host gating, `SetName`
       authorization, chat, startup recovery, seat reassignment, REST error
       responses, and the socket handler's authorization/dispatch decisions.
+- [x] **The HTTP and WebSocket layers are tested end to end.** `api_router`
+      is split out of `main`; HTTP tests drive it with tower's `oneshot`
+      (routing, body extraction, real status codes, redaction of an anonymous
+      read), and socket tests serve it on an ephemeral port and connect with
+      `tokio-tungstenite` (token-derived seat, per-seat redaction of the first
+      frame, fan-out, sender-only errors, silent refusals, write-through to
+      the database). Checked by breaking the first frame's redaction: the
+      test fails.
 - [x] Frontend: 71 unit tests (32 from the shared fixture, plus reconnect,
       chime, spectator numbering, chat unread, seat/observer state) and a
       Playwright layout spec.
