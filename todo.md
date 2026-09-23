@@ -8,8 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Draw animation**: cards slide from the Tavern deck into their sorted
-      hand position.
 - [ ] **Enemy defeat preview**: briefly show what the enemy was defeated with
       before cleanup. (`last_played` is already on the state.)
 
@@ -164,6 +162,10 @@ open are now closed, and a couple that read as closed turned out to be partial.
       state; the duplicate `gameState` copy is gone.
 - [x] **Stationary hand**, **combat animations**, **defeat flight**, **discard
       "remaining" display**, **legible previews**, **full-width solo attack**.
+- [x] **Draw animation**: a drawn card flies from the Tavern deck into its
+      sorted hand slot, starting at the deck's size. Measured in a layout
+      effect before paint; cards already in hand on first render (the deal, a
+      reconnect) don't animate.
 
 ### Tests & docs
 
