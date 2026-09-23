@@ -6,13 +6,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ## Open
 
-### Correctness / security
-
-- [ ] **Rooms persisted before seat tokens existed can't be played.** Their
-      members load with an empty token, which authenticates nobody, so everyone
-      connects as an observer and the seats stay held. New rooms are unaffected.
-      Either clear the `games` table on deploy or add a reclaim path.
-
 ### Gameplay / UX
 
 - [ ] **Draw animation**: cards slide from the Tavern deck into their sorted
@@ -138,6 +131,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
       unparseable row is skipped and logged, and left in the database.
 - [x] **`create_game` input validation**: a player count outside 1–4 panicked
       the handler.
+- [x] **Rooms persisted before seat tokens are playable again.** Their members
+      load with an empty token, which authenticates nobody, so those seats were
+      held forever. A joiner now reclaims one: a matching name takes that
+      member's seat (and host flag) first, otherwise a genuinely free seat is
+      preferred, and a legacy player seat is used before the joiner is made a
+      spectator. The member is taken over in place with a fresh token.
 
 ### UI
 
@@ -168,10 +167,10 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Tests & docs
 
-- [x] Rust: 37 rules-engine tests + 3 shared-fixture tests; 55 server tests
-      covering persistence, seats, host gating, `SetName` authorization, chat,
-      startup recovery, seat reassignment, REST error responses, and the socket
-      handler's authorization/dispatch decisions.
+- [x] Rust: 37 rules-engine tests + 3 shared-fixture tests; 60 server tests
+      covering persistence, seats, legacy seat reclaim, host gating, `SetName`
+      authorization, chat, startup recovery, seat reassignment, REST error
+      responses, and the socket handler's authorization/dispatch decisions.
 - [x] Frontend: 71 unit tests (32 from the shared fixture, plus reconnect,
       chime, spectator numbering, chat unread, seat/observer state) and a
       Playwright layout spec.
