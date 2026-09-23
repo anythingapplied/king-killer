@@ -63,6 +63,27 @@ const tavernText = async (page: Page) => (await page.locator('[data-testid="tave
 const enemyAlt = async (page: Page) =>
     (await page.locator('[data-testid="enemy-card"] img').first().getAttribute('alt')) ?? '';
 
+// The hand renders through AnimatePresence, so a played card stays in the DOM
+// until its exit animation finishes (and a drawn card appears before it lands).
+// A raw count taken mid-animation can be off by one; wait until it holds still.
+const settledHandCount = async (page: Page, stableMs = 750, timeoutMs = 10_000) => {
+    const hand = page.locator('[data-testid="hand-area"] img');
+    const deadline = Date.now() + timeoutMs;
+    let last = await hand.count();
+    let stableSince = Date.now();
+    while (Date.now() < deadline) {
+        await page.waitForTimeout(100);
+        const now = await hand.count();
+        if (now !== last) {
+            last = now;
+            stableSince = Date.now();
+        } else if (Date.now() - stableSince >= stableMs) {
+            return now;
+        }
+    }
+    throw new Error(`hand count never settled within ${timeoutMs}ms (last seen ${last})`);
+};
+
 test('board resumes seamlessly from persisted state across an idle restart', async ({ page }) => {
     test.setTimeout(90_000);
     test.skip(!existsSync(API_BINARY), `API binary not built: ${API_BINARY}. Run: cargo build -p king-killer-api`);
@@ -81,7 +102,7 @@ test('board resumes seamlessly from persisted state across an idle restart', asy
 
         const enemyAlt0 = await enemyAlt(page);
         const tavernBefore = await tavernText(page);
-        const handBefore = await page.locator('[data-testid="hand-area"] img').count();
+        const handBefore = await settledHandCount(page);
         const discardBefore = await page.locator('[data-testid="discard-slot"]').innerText();
         const playedBefore = await page.evaluate(() => document.querySelector('[data-testid="in-play-area"]')?.textContent ?? '');
 
@@ -118,7 +139,9 @@ test('board resumes seamlessly from persisted state across an idle restart', asy
 
         const tavernAfterPlay = await tavernText(page);
         const enemyAfterPlay = await enemyAlt(page);
-        const handAfterPlay = await page.locator('[data-testid="hand-area"] img').count();
+        // The wait above fires on the *first* sign of change, which can be
+        // while the played card is still animating out of the hand.
+        const handAfterPlay = await settledHandCount(page);
 
         // Kill the server — exactly what the idle shutdown does in production.
         await stopApi(api);
@@ -137,21 +160,23 @@ test('board resumes seamlessly from persisted state across an idle restart', asy
         // The resumed board matches the persisted state exactly.
         expect(await enemyAlt(page)).toBe(enemyAfterPlay);
         expect(await tavernText(page)).toBe(tavernAfterPlay);
-        expect(await page.locator('[data-testid="hand-area"] img').count()).toBe(handAfterPlay);
+        await expect(page.locator('[data-testid="hand-area"] img')).toHaveCount(handAfterPlay);
 
         // And the game is still fully interactive: a client→server→client round
         // trip changes the board again. Select cards until the action button
-        // (Attack / Confirm Discard) becomes enabled, then fire it.
+        // becomes enabled, then fire it. While discarding, the button reads
+        // "Discard N More" until the selection covers the damage and only then
+        // "Confirm Discard", so all three labels must match - otherwise the
+        // locator finds nothing and isEnabled() waits out the test timeout.
         const interactHand = await page.locator('[data-testid="hand-area"] img').count();
         const interactDisc = await page.locator('[data-testid="discard-slot"]').innerText();
         const tavBefore = await tavernText(page);
-        const actionButton = page.locator('button:has-text("Attack"), button:has-text("Confirm Discard")');
+        const actionButton = page.getByRole('button', { name: /^(Attack|Confirm Discard|Discard \d+ More)$/ });
         const interactCards = page.locator('[data-testid="hand-area"] img');
-        for (let i = 0; i < 6; i++) {
-            if (await actionButton.isEnabled().catch(() => false)) break;
-            const n = await interactCards.count();
-            if (n === 0) break;
-            await interactCards.nth(Math.min(i, n - 1)).click();
+        const handSize = await interactCards.count();
+        for (let i = 0; i < handSize; i++) {
+            if (await actionButton.isEnabled({ timeout: 2000 }).catch(() => false)) break;
+            await interactCards.nth(i).click();
         }
         await actionButton.click();
         await page.waitForFunction(
