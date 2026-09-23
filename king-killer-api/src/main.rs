@@ -601,6 +601,24 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
     rooms
 }
 
+/// Every API and socket route, without the static-file fallback. Split out of
+/// `main` so tests can drive the real routing, extraction and status codes -
+/// not just call the handler functions - and stand the socket up on a port.
+fn api_router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    Router::new()
+        .route("/api/game", post(create_game))
+        .route("/api/game/{id}", get(get_game))
+        .route("/api/game/{id}/join", post(join_game_seat))
+        .route("/api/ws/{id}", get(ws_handler))
+        .layer(cors)
+        .with_state(state)
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -649,21 +667,8 @@ async fn main() {
         }
     });
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    let app = Router::new()
-        .route("/api/game", post(create_game))
-        .route("/api/game/{id}", get(get_game))
-        .route("/api/game/{id}/join", post(join_game_seat))
-        .route("/api/ws/{id}", get(ws_handler))
-        .layer(cors)
-        .with_state(state);
-
     let dist_dir = std::env::var("DIST_DIR").unwrap_or_else(|_| "frontend/dist".to_string());
-    let app = app.fallback_service(
+    let app = api_router(state).fallback_service(
         ServeDir::new(&dist_dir)
             .not_found_service(ServeFile::new(format!("{dist_dir}/index.html"))),
     );
@@ -2136,5 +2141,286 @@ mod tests {
         assert_eq!(room.chat[0].name, "Robert", "past messages take the new name");
         assert_eq!(room.chat[1].name, "Alice", "other seats are untouched");
         assert_eq!(room.chat[2].name, "Robert");
+    }
+
+    // ---- HTTP: the real router, not just the handler functions ----
+    //
+    // The tests above call handlers directly, which skips routing, body
+    // extraction and the status line a client actually sees. These go through
+    // `api_router` with tower's `oneshot`, so no port is needed.
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    async fn http(state: &AppState, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let res = api_router(state.clone()).oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn post_json(uri: &str, body: &str) -> Request<Body> {
+        Request::post(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// True when no card in any hand, the Tavern or the castle names a suit -
+    /// i.e. everything a reader isn't entitled to is a face-down placeholder.
+    fn hands_are_hidden(game: &serde_json::Value, except_seat: Option<usize>) -> bool {
+        game["players"].as_array().unwrap().iter().enumerate().all(|(i, p)| {
+            Some(i) == except_seat || p["hand"].as_array().unwrap().iter().all(|c| c["suit"].is_null())
+        })
+    }
+
+    #[tokio::test]
+    async fn http_create_returns_the_room_the_creator_and_a_token() {
+        let state = test_state().await;
+        let (status, body) = http(&state, post_json("/api/game", r#"{"num_players":2,"player_name":"Alice"}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+        let id = body["id"].as_str().unwrap();
+        let token = body["token"].as_str().unwrap();
+        assert_eq!(id.len(), 6);
+        assert!(token.len() >= 32);
+        assert_eq!(body["state"]["you"], 0, "the creator is told they hold seat 0");
+        assert_eq!(body["state"]["game"]["players"][0]["name"], "Alice");
+        // The token is issued in its own field and nowhere inside the room view.
+        assert!(!body["state"].to_string().contains(token), "the snapshot never carries a token");
+        assert!(hands_are_hidden(&body["state"]["game"], Some(0)), "only the creator's own hand is visible");
+        assert!(state.rooms.read().unwrap().contains_key(id), "the room is registered");
+    }
+
+    #[tokio::test]
+    async fn http_create_with_a_bad_player_count_is_a_400_with_a_reason() {
+        let state = test_state().await;
+        let (status, body) = http(&state, post_json("/api/game", r#"{"num_players":9}"#)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["message"].as_str().unwrap().contains('9'));
+        assert!(state.rooms.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_create_with_a_malformed_body_is_refused_and_creates_nothing() {
+        let state = test_state().await;
+        let (status, _) = http(&state, post_json("/api/game", "not json")).await;
+        assert!(status.is_client_error(), "got {status}");
+        let (status, _) = http(&state, post_json("/api/game", r#"{"player_name":"no count"}"#)).await;
+        assert!(status.is_client_error(), "a missing num_players is refused, got {status}");
+        assert!(state.rooms.read().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn http_join_unknown_code_is_a_404_naming_the_code() {
+        let state = test_state().await;
+        let (status, body) = http(&state, post_json("/api/game/NOSUCH/join", r#"{"name":"Bob"}"#)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(body["message"].as_str().unwrap().contains("NOSUCH"));
+    }
+
+    #[tokio::test]
+    async fn http_join_then_anonymous_read_hides_every_hand() {
+        let state = test_state().await;
+        let (_, created) = http(&state, post_json("/api/game", r#"{"num_players":2}"#)).await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let (status, joined) = http(&state, post_json(&format!("/api/game/{id}/join"), r#"{"name":"Bob"}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(joined["seat_index"], 1);
+        assert_eq!(joined["spectator"], false);
+        let token = joined["token"].as_str().unwrap();
+        assert_eq!(seat_for_token(&state.rooms.read().unwrap()[&id], Some(token)), Some(1));
+
+        let (status, room) = http(&state, Request::get(format!("/api/game/{id}")).body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(room["you"].is_null(), "an anonymous reader is nobody");
+        assert!(hands_are_hidden(&room["game"], None), "an anonymous GET sees no hand at all");
+        assert!(room["game"]["tavern_deck"].as_array().unwrap().iter().all(|c| c["suit"].is_null()));
+    }
+
+    #[tokio::test]
+    async fn http_unknown_api_route_is_a_404() {
+        let state = test_state().await;
+        let (status, _) = http(&state, Request::get("/api/nope").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // ---- WebSocket: handle_socket end to end ----
+    //
+    // `should_apply` and `apply_action` are covered as pure functions above;
+    // these cover what's left in the handler - token resolution, the initial
+    // snapshot, fan-out to every connection, errors going only to the sender,
+    // and persistence - against a real server on an ephemeral port.
+
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    async fn serve(state: &AppState) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = api_router(state.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        addr
+    }
+
+    async fn connect(addr: std::net::SocketAddr, id: &str, token: Option<&str>) -> Ws {
+        let url = match token {
+            Some(t) => format!("ws://{addr}/api/ws/{id}?token={t}"),
+            None => format!("ws://{addr}/api/ws/{id}"),
+        };
+        tokio_tungstenite::connect_async(url).await.unwrap().0
+    }
+
+    /// Next server message as JSON, failing the test if none arrives promptly.
+    async fn recv(ws: &mut Ws) -> serde_json::Value {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("timed out waiting for a server message")
+                .expect("socket closed")
+                .unwrap();
+            if let WsMessage::Text(text) = frame {
+                return serde_json::from_str(text.as_str()).unwrap();
+            }
+        }
+    }
+
+    /// Asserts the server sends nothing on this connection for a moment.
+    async fn assert_silent(ws: &mut Ws, why: &str) {
+        if let Ok(Some(Ok(frame))) = tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
+            panic!("{why}, but got {frame:?}");
+        }
+    }
+
+    async fn send(ws: &mut Ws, action: serde_json::Value) {
+        ws.send(WsMessage::Text(action.to_string().into())).await.unwrap();
+    }
+
+    /// A 2-player room with both seats claimed; returns (id, host token, joiner token).
+    async fn two_seat_room(state: &AppState) -> (String, String, String) {
+        let created = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 2, player_name: Some("Alice".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let joined = join_game_seat(Path(created.id.clone()), State(state.clone()), Json(JoinRequest { name: Some("Bob".into()) }))
+            .await
+            .unwrap()
+            .0;
+        (created.id, created.token, joined.token)
+    }
+
+    #[tokio::test]
+    async fn ws_first_frame_is_the_room_as_this_seat_may_see_it() {
+        let state = test_state().await;
+        let (id, _, bob_token) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+
+        let mut bob = connect(addr, &id, Some(&bob_token)).await;
+        let msg = recv(&mut bob).await;
+        assert_eq!(msg["type"], "State");
+        assert_eq!(msg["payload"]["you"], 1, "the seat comes from the token");
+        let game = &msg["payload"]["game"];
+        assert!(game["players"][1]["hand"].as_array().unwrap().iter().all(|c| !c["suit"].is_null()), "Bob sees his own hand");
+        assert!(hands_are_hidden(game, Some(1)), "and nobody else's");
+    }
+
+    #[tokio::test]
+    async fn ws_without_a_token_watches_and_is_refused_silently() {
+        let state = test_state().await;
+        let (id, alice_token, _) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        recv(&mut alice).await; // initial snapshot
+        let mut stranger = connect(addr, &id, None).await;
+        let msg = recv(&mut stranger).await;
+        assert!(msg["payload"]["you"].is_null(), "no token, no seat");
+
+        // Claiming a seat in the body buys nothing: identity is the socket's.
+        send(&mut stranger, serde_json::json!({ "type": "SetName", "payload": { "seat": 0, "name": "Mallory" } })).await;
+        assert_silent(&mut alice, "a refused action must not be broadcast").await;
+        assert_silent(&mut stranger, "a refused action gets no reply either").await;
+        assert_eq!(state.rooms.read().unwrap()[&id].members[0].name, "Alice");
+    }
+
+    #[tokio::test]
+    async fn ws_a_rename_reaches_every_connection_and_is_persisted() {
+        let state = test_state().await;
+        let (id, alice_token, bob_token) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        let mut bob = connect(addr, &id, Some(&bob_token)).await;
+        recv(&mut alice).await;
+        recv(&mut bob).await;
+
+        send(&mut bob, serde_json::json!({ "type": "SetName", "payload": { "seat": 1, "name": "Robert" } })).await;
+        for ws in [&mut alice, &mut bob] {
+            let msg = recv(ws).await;
+            assert_eq!(msg["type"], "State");
+            assert_eq!(msg["payload"]["game"]["players"][1]["name"], "Robert");
+        }
+
+        let (stored,): (String,) = sqlx::query_as("SELECT state_json FROM games WHERE id = ?1")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(stored.contains("Robert"), "the room is written through to the database");
+        let (history,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM game_history WHERE game_id = ?1 AND action_type = 'set_name'")
+            .bind(&id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(history, 1, "and recorded in the history");
+    }
+
+    #[tokio::test]
+    async fn ws_a_rejected_play_is_reported_to_the_sender_only() {
+        let state = test_state().await;
+        let (id, alice_token, bob_token) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+        // GameState::new picks the starting seat at random; whoever it is acts.
+        let current = state.rooms.read().unwrap()[&id].game.current_player_index;
+        let (actor_token, watcher_token) = if current == 0 { (&alice_token, &bob_token) } else { (&bob_token, &alice_token) };
+
+        let mut actor = connect(addr, &id, Some(actor_token)).await;
+        let mut watcher = connect(addr, &id, Some(watcher_token)).await;
+        recv(&mut actor).await;
+        recv(&mut watcher).await;
+
+        send(&mut actor, serde_json::json!({ "type": "PlayCards", "payload": { "indices": [99] } })).await;
+        let reply = recv(&mut actor).await;
+        assert_eq!(reply["type"], "Error");
+        assert_eq!(reply["payload"]["action"], "play_cards");
+        assert!(!reply["payload"]["message"].as_str().unwrap().is_empty());
+        // The attempt still round-trips the (unchanged) room to everyone, but
+        // the Error itself is never broadcast.
+        let seen = recv(&mut watcher).await;
+        assert_eq!(seen["type"], "State", "the other seat never hears about the mistake");
+    }
+
+    #[tokio::test]
+    async fn ws_chat_is_credited_to_the_connection_not_the_body() {
+        let state = test_state().await;
+        let (id, alice_token, bob_token) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        let mut bob = connect(addr, &id, Some(&bob_token)).await;
+        recv(&mut alice).await;
+        recv(&mut bob).await;
+
+        // An extra "seat" field in the payload is simply not part of SendChat.
+        send(&mut bob, serde_json::json!({ "type": "SendChat", "payload": { "text": "hi all", "seat": 0 } })).await;
+        let msg = recv(&mut alice).await;
+        let chat = msg["payload"]["chat"].as_array().unwrap();
+        assert_eq!(chat.len(), 1);
+        assert_eq!(chat[0]["seat"], 1);
+        assert_eq!(chat[0]["name"], "Bob");
+        assert_eq!(chat[0]["text"], "hi all");
     }
 }
