@@ -81,6 +81,8 @@ struct Member {
     ///
     /// `#[serde(default)]` loads rooms persisted before tokens existed; an
     /// empty token matches nothing, so those members cannot be authenticated.
+    /// Their player seats are reclaimed by the next joiner instead - see
+    /// [`legacy_member_to_reclaim`].
     #[serde(default)]
     token: String,
     /// Monotonic per room, in the order members arrived. Used to pick who
@@ -376,6 +378,36 @@ fn next_joined_seq(room: &Room) -> u64 {
     room.members.iter().map(|m| m.joined_seq).max().map_or(0, |max| max + 1)
 }
 
+/// Index of a legacy member this joiner should take over, if any.
+///
+/// Rooms persisted before seat tokens existed load their members with an empty
+/// token, which authenticates nobody - so those player seats are held forever
+/// by people who can never connect as them. Such a seat is up for grabs:
+/// a joiner whose name matches the legacy member reclaims it first (that is
+/// almost certainly the same person coming back), and otherwise any legacy
+/// player seat is used before the joiner is turned into a spectator. A genuinely
+/// free seat still wins over a non-matching legacy one, so a reclaim never
+/// displaces a seat someone might still come back for when it isn't needed.
+fn legacy_member_to_reclaim(room: &Room, name: Option<&str>, has_free_seat: bool) -> Option<usize> {
+    let player_count = room.game.players.len();
+    let is_legacy_player = |m: &Member| m.token.is_empty() && m.seat < player_count;
+
+    let wanted = name.map(str::trim).filter(|n| !n.is_empty());
+    if let Some(wanted) = wanted {
+        if let Some(i) = room
+            .members
+            .iter()
+            .position(|m| is_legacy_player(m) && m.name.trim().eq_ignore_ascii_case(wanted))
+        {
+            return Some(i);
+        }
+    }
+    if has_free_seat {
+        return None;
+    }
+    room.members.iter().position(is_legacy_player)
+}
+
 fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
     // Recorded before either branch pushes a Member, so it reflects the room
     // as it was before this join - i.e. whether anyone was here already.
@@ -384,6 +416,23 @@ fn claim_seat(room: &mut Room, name: Option<String>) -> (usize, bool, String) {
     let player_count = room.game.players.len();
     let taken: HashSet<usize> = room.members.iter().map(|m| m.seat).collect();
     let free: Vec<usize> = (0..player_count).filter(|s| !taken.contains(s)).collect();
+
+    if let Some(i) = legacy_member_to_reclaim(room, name.as_deref(), !free.is_empty()) {
+        // Take over the legacy member in place: same seat, and the host flag
+        // carries over so a migrated room keeps someone able to re-deal. It is
+        // a fresh arrival as far as re-deal ordering is concerned.
+        let token = new_token();
+        let member = &mut room.members[i];
+        member.token = token.clone();
+        member.joined_seq = joined_seq;
+        if let Some(provided_name) = name {
+            member.name = provided_name.clone();
+            if let Some(player) = room.game.players.get_mut(member.seat) {
+                player.name = provided_name;
+            }
+        }
+        return (member.seat, true, token);
+    }
 
     if let Some(&seat) = free.choose(&mut rand::rng()) {
         let token = new_token();
@@ -517,7 +566,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     name: p.name.clone(),
                     host: order == 0,
                     // Predates tokens; nobody can authenticate as these seats.
-                    // See todo.md - such a room is effectively read-only.
+                    // A joiner reclaims them - see legacy_member_to_reclaim.
                     token: String::new(),
                     // No arrival order was recorded; seat order is the only
                     // approximation available.
@@ -1637,6 +1686,80 @@ mod tests {
             assert!(!issued.contains(&token), "every seat gets its own");
             issued.push(token);
         }
+    }
+
+    /// A 2-player room as `load_rooms` rebuilds one persisted before seat
+    /// tokens: both seats held by members nobody can authenticate as.
+    fn legacy_room() -> Room {
+        Room {
+            id: "LEGACY".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: String::new(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: String::new(), joined_seq: 1 },
+            ],
+            game: GameState::new(2),
+            chat: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_joiner_reclaims_a_legacy_seat_instead_of_watching() {
+        let mut room = legacy_room();
+        let (seat, is_player, token) = claim_seat(&mut room, Some("Carol".to_string()));
+        assert!(is_player, "a tokenless seat is reclaimed, not left to block the game");
+        assert!(seat < 2);
+        assert_eq!(seat_for_token(&room, Some(&token)), Some(seat), "the new token authenticates");
+        assert_eq!(room.members.len(), 2, "the legacy member is taken over, not duplicated");
+        let member = room.members.iter().find(|m| m.seat == seat).unwrap();
+        assert_eq!(member.name, "Carol");
+        assert_eq!(room.game.players[seat].name, "Carol");
+    }
+
+    #[test]
+    fn a_returning_player_reclaims_their_own_legacy_seat_and_host() {
+        let mut room = legacy_room();
+        // Case and surrounding space differ from the stored name.
+        let (seat, is_player, token) = claim_seat(&mut room, Some(" alice ".to_string()));
+        assert!(is_player);
+        assert_eq!(seat, 0, "the name match wins over the other legacy seat");
+        assert!(room.members[0].host, "the host flag carries over, so the room can still re-deal");
+        assert_eq!(seat_for_token(&room, Some(&token)), Some(0));
+        // Bob's seat is untouched and still unclaimed.
+        assert!(room.members[1].token.is_empty());
+    }
+
+    #[test]
+    fn a_free_seat_is_preferred_over_an_unmatched_legacy_one() {
+        let mut room = Room {
+            id: "LEGACY3".to_string(),
+            members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: String::new(), joined_seq: 0 }],
+            game: GameState::new(2),
+            chat: Vec::new(),
+        };
+        let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
+        assert!(is_player);
+        assert_eq!(seat, 1, "Alice may still come back for seat 0");
+        assert!(room.members[0].token.is_empty());
+        assert_eq!(room.members.len(), 2);
+    }
+
+    #[test]
+    fn a_reclaimed_seat_counts_as_a_fresh_arrival() {
+        let mut room = legacy_room();
+        let (seat, _, _) = claim_seat(&mut room, Some("Carol".to_string()));
+        let member = room.members.iter().find(|m| m.seat == seat).unwrap();
+        assert_eq!(member.joined_seq, 2, "re-deal ordering sees the reclaimer as the newest arrival");
+    }
+
+    #[test]
+    fn legacy_spectators_are_not_reclaimed_as_player_seats() {
+        let mut room = legacy_room();
+        room.members[0].token = "tok0".to_string();
+        room.members[1].token = "tok1".to_string();
+        room.members.push(Member { seat: 2, name: "Wanda".to_string(), host: false, token: String::new(), joined_seq: 2 });
+        let (seat, is_player, _) = claim_seat(&mut room, Some("Wanda".to_string()));
+        assert!(!is_player, "a full table still turns a joiner into a spectator");
+        assert_eq!(seat, 3);
     }
 
     #[test]
