@@ -11,8 +11,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Testing & infra
 
-- [ ] **Playwright needs a running backend.** The layout and join specs assume
-      `localhost:3000` is up. Worth a fixture that boots the server.
 - [ ] **Background-tab alert on mobile.** iOS suspends audio for backgrounded
       tabs, so the turn chime is inaudible there. The tab-title flash only helps
       on desktop; the Notifications API is the only thing that works unfocused.
@@ -171,6 +169,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
       covering persistence, seats, legacy seat reclaim, host gating, `SetName`
       authorization, chat, startup recovery, seat reassignment, REST error
       responses, and the socket handler's authorization/dispatch decisions.
+- [x] **Playwright starts its own servers.** A shared fixture
+      (`frontend/tests/fixtures.ts`) boots a fresh API with a throwaway
+      database for every test, automatically, and `webServer` starts or reuses
+      Vite. `join` and `resume` lost their copies of the spawn code (`resume`
+      uses the fixture's `stop()`/`restart()`). Specs run one at a time since
+      each owns :3000.
 - [x] **The HTTP and WebSocket layers are tested end to end.** `api_router`
       is split out of `main`; HTTP tests drive it with tower's `oneshot`
       (routing, body extraction, real status codes, redaction of an anonymous

@@ -1,4 +1,6 @@
-import { test, expect, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
+// The fixture boots a fresh API for each test; see tests/fixtures.ts.
+import { test, expect } from './fixtures';
 
 // Parses a card SVG filename like "9C.svg", "10D.svg", "KH.svg" into a card.
 interface ParsedCard {

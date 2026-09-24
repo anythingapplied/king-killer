@@ -43,8 +43,14 @@ cd frontend && npm install && npm run dev
 cargo test                      # rules engine + server
 cd frontend && npm test         # unit tests (vitest)
 cd frontend && npm run lint     # eslint
-cd frontend && npm run test:e2e # playwright — needs the backend running
+cd frontend && npm run test:e2e # playwright — see below
 ```
+
+The Playwright specs start everything themselves: `webServer` in
+`playwright.config.ts` starts (or reuses) the Vite dev server, and the fixture in
+`frontend/tests/fixtures.ts` boots a fresh API with a throwaway database for
+each test. They only need the API binary built (`cargo build -p king-killer-api`)
+and port 3000 free. Every test owns that port, so they run one at a time.
 
 ## Things that will bite you
 

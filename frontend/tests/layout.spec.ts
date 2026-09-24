@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test';
+// The fixture boots a fresh API for each test; see tests/fixtures.ts.
+import { test, expect } from './fixtures';
 
 const resolutions = [
   { name: 'mobile', width: 375, height: 812 },
