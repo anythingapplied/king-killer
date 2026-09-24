@@ -67,8 +67,11 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
     return (
         <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
             {/* Left: In Play. Kept as a flex sibling (not an overlay) at every
-                width so it can never cover the board; it just gets narrower. */}
-            <div className="flex flex-col items-center justify-center gap-2 sm:gap-3 flex-shrink-0 w-12 sm:w-16 md:w-28">
+                width so it can never cover the board; it just gets narrower.
+                On a wide screen both side columns widen (lg:w-60, the same on
+                each side so the enemy stays centred) so the Discarded and Last
+                Play cards sit in one horizontal row instead of stacking. */}
+            <div className="flex flex-col items-center justify-center gap-2 sm:gap-3 flex-shrink-0 w-12 sm:w-16 md:w-28 lg:w-60">
                 <AnimatePresence>
                     {gameState.played_cards.length > 0 && (
                         <motion.div 
@@ -100,7 +103,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             className="bg-slate-800/40 backdrop-blur-sm border border-slate-700/50 p-1.5 md:p-2 rounded-xl md:rounded-2xl flex flex-col items-center shadow-xl w-full"
                         >
                             <span className="t-micro font-black text-slate-400 uppercase tracking-widest mb-1 text-center leading-tight">Discarded</span>
-                            <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
+                            <div className="flex gap-0.5 md:gap-1 flex-wrap lg:flex-nowrap justify-center w-full">
                                 {gameState.last_discarded.slice(0, 4).map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
                             </div>
                             {gameState.last_discarded.length > 4 && (
@@ -239,7 +242,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
             </div>
 
             {/* Right: Last Play Sidebar */}
-            <div className="flex flex-col items-center justify-center gap-4 flex-shrink-0 w-12 sm:w-16 md:w-28">
+            <div className="flex flex-col items-center justify-center gap-4 flex-shrink-0 w-12 sm:w-16 md:w-28 lg:w-60">
                 <AnimatePresence>
                     {gameState.last_played && (
                         <motion.div 
@@ -293,7 +296,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                                 /* An empty play is a yield. */
                                 <span className="t-label font-black text-amber-400 uppercase tracking-widest text-center">Yield</span>
                             ) : (
-                                <div className="flex gap-0.5 md:gap-1 flex-wrap justify-center w-full">
+                                <div className="flex gap-0.5 md:gap-1 flex-wrap lg:flex-nowrap justify-center w-full">
                                     {gameState.last_played.map((c) => <Card key={c.id} card={c} className="thumb-card shadow-lg" />)}
                                 </div>
                             )}
