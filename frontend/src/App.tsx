@@ -37,7 +37,7 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, soundBlocked, enableSound, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
+        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, soundBlocked, enableSound, homeScreenTip, closeHomeScreenTip, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
@@ -149,6 +149,8 @@ const App: React.FC = () => {
                 onToggleTurnNotify={() => void toggleTurnNotify()}
                 soundBlocked={soundBlocked}
                 onEnableSound={enableSound}
+                homeScreenTip={homeScreenTip}
+                onCloseHomeScreenTip={closeHomeScreenTip}
             />
 
             {/* Arena Row */}

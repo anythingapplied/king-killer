@@ -37,6 +37,9 @@ interface HUDProps {
     /** The browser is blocking audio until the page is interacted with. */
     soundBlocked: boolean;
     onEnableSound: () => void;
+    /** iPhone in a Safari tab: turn alerts need the game on the Home Screen. */
+    homeScreenTip: boolean;
+    onCloseHomeScreenTip: () => void;
 }
 
 /** Solo play always starts with two Jesters, so the row always shows two slots. */
@@ -45,7 +48,7 @@ const SOLO_JESTER_SLOTS = 2;
 const HUD: React.FC<HUDProps> = ({ 
     myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat,
     onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename,
-    turnNotify, notifyPermission, onToggleTurnNotify, soundBlocked, onEnableSound,
+    turnNotify, notifyPermission, onToggleTurnNotify, soundBlocked, onEnableSound, homeScreenTip, onCloseHomeScreenTip,
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator || myPlayerId === null ? undefined : gameState.players[myPlayerId];
@@ -271,6 +274,24 @@ const HUD: React.FC<HUDProps> = ({
                 >
                     🔇 Tap here to turn on the turn sound
                 </button>
+            )}
+
+            {/* iOS Safari offers no notifications in a normal tab - only once
+                the game is added to the Home Screen - and the notify toggle
+                is hidden there, so this is the only way players find out. */}
+            {homeScreenTip && (
+                <div data-testid="home-screen-tip" className="flex items-center justify-center gap-2 mt-1.5 pt-1.5 border-t border-slate-700/30">
+                    <span className="t-micro font-black uppercase tracking-widest text-sky-300 text-center">
+                        📲 For turn alerts: Share → Add to Home Screen
+                    </span>
+                    <button
+                        onClick={onCloseHomeScreenTip}
+                        aria-label="Dismiss the Home Screen tip"
+                        className="t-micro font-black text-slate-400 hover:text-slate-200 px-1"
+                    >
+                        ✕
+                    </button>
+                </div>
             )}
         </div>
     );

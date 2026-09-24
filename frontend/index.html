@@ -2,8 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Installable as a home-screen app. On iOS that is required for turn
+         notifications: Safari only offers push to home-screen web apps. -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-title" content="King Killer" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>King Killer</title>
   </head>
   <body>

@@ -108,6 +108,111 @@ export const showTurnNotification = async (body: string): Promise<void> => {
     } catch { /* this browser only allows service-worker notifications */ }
 };
 
+// --- Web Push ------------------------------------------------------------
+//
+// The page-only notification above can't fire once the page is suspended,
+// which iOS does almost as soon as you switch away. With push, the server
+// sends the alert through the platform's push service to the service worker
+// (public/sw.js) instead. The server only pushes to a player with no open
+// connection, so a running page never gets both.
+//
+// On iOS this needs the game added to the Home Screen: Safari in a normal
+// tab has no Notification or PushManager at all.
+
+const urlBase64ToBytes = (b64: string): Uint8Array<ArrayBuffer> => {
+    const padded = (b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(padded);
+    const bytes = new Uint8Array(new ArrayBuffer(raw.length));
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes;
+};
+
+const sameKey = (a: ArrayBuffer | null | undefined, b: Uint8Array): boolean => {
+    if (!a) return false;
+    const x = new Uint8Array(a);
+    return x.length === b.length && x.every((v, i) => v === b[i]);
+};
+
+const HOME_SCREEN_TIP_KEY = 'kingkiller_home_screen_tip_dismissed';
+
+/**
+ * True on an iPhone/iPad in a normal Safari tab: turn alerts exist there only
+ * once the game is added to the Home Screen, and nothing else on the page
+ * would tell the player (the notify toggle is hidden - no Notification API).
+ * iPadOS reports itself as a Mac, hence the touch check.
+ */
+export const needsHomeScreenForAlerts = (): boolean => {
+    if (typeof window === 'undefined') return false;
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true
+        || window.matchMedia?.('(display-mode: standalone)').matches;
+    return ios && !standalone;
+};
+
+export const isHomeScreenTipDismissed = (): boolean => {
+    try {
+        return localStorage.getItem(HOME_SCREEN_TIP_KEY) === '1';
+    } catch {
+        return false;
+    }
+};
+
+export const dismissHomeScreenTip = (): void => {
+    try {
+        localStorage.setItem(HOME_SCREEN_TIP_KEY, '1');
+    } catch { /* shows again next visit */ }
+};
+
+export const pushSupported = (): boolean =>
+    typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window;
+
+/**
+ * Registers (or, when `enabled` is false, withdraws) this browser's push
+ * subscription for one room, proving the seat with its token. Best effort:
+ * if the server has no VAPID keys or anything fails, the page-only
+ * notification is still there, so errors are swallowed.
+ */
+export const syncPushSubscription = async (
+    apiBase: string,
+    gameId: string,
+    token: string,
+    enabled: boolean,
+): Promise<void> => {
+    if (!pushSupported()) return;
+    try {
+        const reg = await serviceWorker();
+        if (!reg) return;
+        const post = (subscription: PushSubscriptionJSON | null) =>
+            fetch(`${apiBase}/api/game/${gameId}/push`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, subscription }),
+            });
+
+        if (!enabled || notificationPermission() !== 'granted') {
+            // Only worth telling the server if this browser ever subscribed.
+            if (await reg.pushManager.getSubscription()) await post(null);
+            return;
+        }
+
+        const keyRes = await fetch(`${apiBase}/api/push/key`);
+        if (!keyRes.ok) return; // push not configured on this server
+        const key = urlBase64ToBytes(((await keyRes.json()) as { key: string }).key);
+
+        let sub = await reg.pushManager.getSubscription();
+        // A subscription made against an older server key can't be pushed to.
+        if (sub && !sameKey(sub.options.applicationServerKey, key)) {
+            await sub.unsubscribe();
+            sub = null;
+        }
+        // userVisibleOnly is required by Chrome and Safari: every push shows a
+        // notification. The service worker always does.
+        sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        await post(sub.toJSON());
+    } catch { /* push is an extra; page-only notifications still work */ }
+};
+
 /** Clears the notification once it's been answered (the tab came back). */
 export const clearTurnNotification = async (): Promise<void> => {
     const reg = await serviceWorker();

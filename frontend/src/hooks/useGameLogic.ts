@@ -5,8 +5,9 @@ import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isAudioReady, isMuted, onAudioReadyChange, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
 import {
-  clearTurnNotification, disableTurnNotify, enableTurnNotify, isTurnNotifyEnabled,
-  notificationPermission, shouldNotifyTurn, showTurnNotification, type NotifyPermission,
+  clearTurnNotification, disableTurnNotify, dismissHomeScreenTip, enableTurnNotify, isHomeScreenTipDismissed,
+  isTurnNotifyEnabled, needsHomeScreenForAlerts, notificationPermission, shouldNotifyTurn, showTurnNotification,
+  syncPushSubscription, type NotifyPermission,
 } from '../turnNotify';
 import { newestSeen, unreadCount } from '../chatUnread';
 import { isWatching } from '../seatState';
@@ -170,6 +171,14 @@ export const useGameLogic = () => {
   // page has been interacted with since it loaded, and again if the browser
   // or OS suspends audio later.
   const [audioReady, setAudioReady] = useState<boolean>(() => isAudioReady());
+  // iPhone in a Safari tab: turn alerts need the game on the Home Screen.
+  const [homeScreenTipOpen, setHomeScreenTipOpen] = useState<boolean>(
+    () => needsHomeScreenForAlerts() && !isHomeScreenTipDismissed(),
+  );
+  const closeHomeScreenTip = useCallback(() => {
+    dismissHomeScreenTip();
+    setHomeScreenTipOpen(false);
+  }, []);
   useEffect(() => onAudioReadyChange(setAudioReady), []);
 
   // Ring the bell when the turn arrives, so the next player knows they're up
@@ -188,6 +197,17 @@ export const useGameLogic = () => {
     // turnNotify and gameId are read, not reacted to: the trigger is the turn change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localGameState, myPlayerId, isMyTurn, isSolo]);
+
+  // Keep the server's push subscription for this room in step with the
+  // toggle: registered while notifications are on (so the turn reaches a
+  // suspended page, e.g. on iOS), withdrawn when they're switched off. Re-run
+  // per room, since a subscription is stored per room and seat token.
+  useEffect(() => {
+    if (!gameId || myPlayerId === null) return;
+    let token: string | null = null;
+    try { token = localStorage.getItem(`token_${gameId}`); } catch { /* no storage */ }
+    if (token) void syncPushSubscription(API_BASE, gameId, token, turnNotify);
+  }, [gameId, myPlayerId, turnNotify]);
 
   // Once the player is back on the page the notification has done its job.
   useEffect(() => {
@@ -825,6 +845,8 @@ export const useGameLogic = () => {
     // Only worth saying where a chime could ever ring for this player.
     soundBlocked: !audioReady && !muted && !isSolo && !isSpectator && myPlayerId !== null,
     enableSound,
+    homeScreenTip: homeScreenTipOpen && !isSolo && !isSpectator && myPlayerId !== null,
+    closeHomeScreenTip,
     chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
