@@ -30,6 +30,10 @@ interface HUDProps {
     isHost: boolean;
     onNewGameClick: () => void;
     onRename: (name: string) => void;
+    /** Turn notifications are switched on (and permitted). */
+    turnNotify: boolean;
+    notifyPermission: NotificationPermission | 'unsupported';
+    onToggleTurnNotify: () => void;
 }
 
 /** Solo play always starts with two Jesters, so the row always shows two slots. */
@@ -37,7 +41,8 @@ const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
     myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat,
-    onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename 
+    onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename,
+    turnNotify, notifyPermission, onToggleTurnNotify,
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator || myPlayerId === null ? undefined : gameState.players[myPlayerId];
@@ -109,6 +114,29 @@ const HUD: React.FC<HUDProps> = ({
                             className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none"
                         >
                             {muted ? '🔕' : '🔔'}
+                        </button>
+                    )}
+                    {/* A system notification when the turn arrives while the tab
+                        is hidden. Hidden where it can't apply: solo (the turn
+                        never leaves you), spectators (never have a turn) and
+                        browsers without notifications. */}
+                    {!isSolo && !isSpectator && notifyPermission !== 'unsupported' && (
+                        <button
+                            onClick={onToggleTurnNotify}
+                            disabled={notifyPermission === 'denied'}
+                            aria-pressed={turnNotify}
+                            aria-label={turnNotify ? 'Stop turn notifications' : 'Notify me on my turn'}
+                            title={
+                                notifyPermission === 'denied'
+                                    ? 'Notifications are blocked for this site - allow them in your browser settings'
+                                    : turnNotify
+                                        ? 'Notifying you when it\'s your turn while this tab is hidden - click to stop'
+                                        : 'Notify me when it\'s my turn while this tab is hidden'
+                            }
+                            data-testid="notify-toggle"
+                            className={`t-micro font-black px-2 py-1 rounded-full border shadow leading-none disabled:opacity-40 ${turnNotify ? 'bg-blue-700 border-blue-500 hover:bg-blue-600' : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}
+                        >
+                            {turnNotify ? '📳' : '📴'}
                         </button>
                     )}
                 </div>

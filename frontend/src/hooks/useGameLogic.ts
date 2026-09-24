@@ -4,6 +4,10 @@ import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, is
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
 import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
+import {
+  clearTurnNotification, disableTurnNotify, enableTurnNotify, isTurnNotifyEnabled,
+  notificationPermission, shouldNotifyTurn, showTurnNotification, type NotifyPermission,
+} from '../turnNotify';
 import { newestSeen, unreadCount } from '../chatUnread';
 import { isWatching } from '../seatState';
 
@@ -78,6 +82,10 @@ export const useGameLogic = () => {
   const lastGameStateJsonRef = useRef<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [muted, setMutedState] = useState<boolean>(() => isMuted());
+  // Turn notifications: the player's opt-in, and what the browser allows.
+  // Only "on" when both hold; a revoked permission reads as off.
+  const [turnNotify, setTurnNotify] = useState<boolean>(() => isTurnNotifyEnabled() && notificationPermission() === 'granted');
+  const [notifyPermission, setNotifyPermission] = useState<NotifyPermission>(() => notificationPermission());
   const [chat, setChat] = useState<ChatMessage[]>([]);
   // The most recent server-side rejection, e.g. "that combo isn't legal" or
   // "not enough to cover the damage". null once dismissed or timed out.
@@ -164,8 +172,23 @@ export const useGameLogic = () => {
     if (!localGameState || myPlayerId === null) return;
     const prev = wasMyTurnRef.current;
     wasMyTurnRef.current = isMyTurn;
-    if (shouldRingTurnChime(prev, isMyTurn, isSolo)) playBellChime();
+    const turnJustArrived = shouldRingTurnChime(prev, isMyTurn, isSolo);
+    if (turnJustArrived) playBellChime();
+    // Same trigger, for a player who has switched away and may not hear the
+    // chime - see `shouldNotifyTurn`.
+    if (shouldNotifyTurn(turnJustArrived, document.hidden, turnNotify, notificationPermission())) {
+      void showTurnNotification(gameId ? `Room ${gameId}: the table is waiting on you.` : 'The table is waiting on you.');
+    }
+    // turnNotify and gameId are read, not reacted to: the trigger is the turn change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localGameState, myPlayerId, isMyTurn, isSolo]);
+
+  // Once the player is back on the page the notification has done its job.
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) void clearTurnNotification(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   // Flash the tab title while it's our turn and the tab is unfocused, so a
   // player in another tab notices. Stops as soon as the tab gets focus.
@@ -699,6 +722,19 @@ export const useGameLogic = () => {
     if (!next) playBellChime();
   }, []);
 
+  // Must run from the click itself: browsers only show the permission prompt
+  // for a user gesture.
+  const toggleTurnNotify = useCallback(async () => {
+    if (turnNotify) {
+      disableTurnNotify();
+      setTurnNotify(false);
+      return;
+    }
+    const permission = await enableTurnNotify();
+    setNotifyPermission(permission);
+    setTurnNotify(permission === 'granted');
+  }, [turnNotify]);
+
   const chooseNextPlayer = (index: number) => {
     sendAction({ type: 'ChooseNextPlayer', payload: { index } });
   };
@@ -774,6 +810,7 @@ export const useGameLogic = () => {
   return {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
+    turnNotify, notifyPermission, toggleTurnNotify,
     chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),

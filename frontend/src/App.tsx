@@ -37,7 +37,7 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
+        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
@@ -144,6 +144,9 @@ const App: React.FC = () => {
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
                 onNewGameClick={() => setShowNewGame(true)}
                 onRename={renamePlayer}
+                turnNotify={turnNotify}
+                notifyPermission={notifyPermission}
+                onToggleTurnNotify={() => void toggleTurnNotify()}
             />
 
             {/* Arena Row */}
