@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { GameState, GameAction, Card as CardType, CombatEffect, RoomSnapshot, RoomMember, ChatMessage } from '../types';
 import { getAttackValue, getRankValue, isSelectionValid, calculateBlowDamage, isSuitImmune, suitOrder } from '../gameLogic';
 import { decideBufferedActionsToReplay } from '../reconnectLogic';
-import { installAudioUnlock, isMuted, playBellChime, setMuted } from '../sound';
+import { installAudioUnlock, isAudioReady, isMuted, onAudioReadyChange, playBellChime, setMuted } from '../sound';
 import { shouldRingTurnChime } from '../turnChime';
 import {
   clearTurnNotification, disableTurnNotify, enableTurnNotify, isTurnNotifyEnabled,
@@ -165,6 +165,12 @@ export const useGameLogic = () => {
   // state update — never a gesture. Arm the context on the first interaction
   // with the page so the chime can actually sound later.
   useEffect(() => installAudioUnlock(), []);
+
+  // Whether the browser will actually let the chime play. False until the
+  // page has been interacted with since it loaded, and again if the browser
+  // or OS suspends audio later.
+  const [audioReady, setAudioReady] = useState<boolean>(() => isAudioReady());
+  useEffect(() => onAudioReadyChange(setAudioReady), []);
 
   // Ring the bell when the turn arrives, so the next player knows they're up
   // without watching the screen. See `shouldRingTurnChime` for the rule.
@@ -722,6 +728,11 @@ export const useGameLogic = () => {
     if (!next) playBellChime();
   }, []);
 
+  // From the "tap to turn on sound" hint. The tap itself is the gesture the
+  // browser wants (the window listener in installAudioUnlock resumes audio on
+  // pointerdown); ring once so the player hears that it worked.
+  const enableSound = useCallback(() => playBellChime(), []);
+
   // Must run from the click itself: browsers only show the permission prompt
   // for a user gesture.
   const toggleTurnNotify = useCallback(async () => {
@@ -811,6 +822,9 @@ export const useGameLogic = () => {
     gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
     defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, muted, toggleMute, isHost,
     turnNotify, notifyPermission, toggleTurnNotify,
+    // Only worth saying where a chime could ever ring for this player.
+    soundBlocked: !audioReady && !muted && !isSolo && !isSpectator && myPlayerId !== null,
+    enableSound,
     chat, sendChat, actionError, dismissActionError,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),

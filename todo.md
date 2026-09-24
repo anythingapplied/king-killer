@@ -179,6 +179,15 @@ open are now closed, and a couple that read as closed turned out to be partial.
       1.1s, up from 0.45s). The board lags the server during that hold, so the
       in-play area still showed the old state and the winning cards were never
       seen.
+- [x] **"Tap to turn on the turn sound" hint.** Browsers only let a page play
+      audio after it has been interacted with since it loaded, so after a
+      reload, a reopened link or a discarded-and-restored tab the chime was
+      silently swallowed until the player happened to click. The HUD now says
+      so while audio is blocked; one tap unblocks it and rings to confirm. The
+      unlock listener also stays armed, so audio the browser or OS suspends
+      later comes back on the next tap. `turn-chime.spec.ts` checks every seat
+      (host included) gets a chime per turn arrival, and the hint's behaviour
+      under an emulated gesture policy (headless Chromium ignores the real one).
 - [x] **Turn notifications for a hidden tab.** A HUD toggle asks for
       notification permission from the click itself; when the turn arrives
       while the page is hidden, a system notification is shown (one tag, so it
