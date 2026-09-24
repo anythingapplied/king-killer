@@ -8,6 +8,36 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
+- [ ] **Discarded and Last Play side by side on wide screens.** They stack
+      vertically in the narrow side columns; with room to spare they should
+      sit horizontally.
+- [ ] **Chat and the game log shouldn't cover the board.** Both open as
+      full-screen modals. On a big enough screen they should be panels you
+      can have open together while still playing.
+- [ ] **Undo for moves that didn't reveal anything.** Decided: keep a
+      snapshot of the state from before each move and restore it, rather
+      than trying to reverse the move. That makes a Hearts play undoable
+      even though it shuffles the discard pile into the Tavern - the new
+      order is never shown to anyone, so nothing is learned. A move that
+      *reveals* something must stay final: drawing cards (Diamonds, a
+      refill), a new enemy coming up, or anything else that puts hidden
+      cards face up. Notes for whoever builds it:
+      - The snapshot has to include the RNG state, or undoing and replaying
+        the same Hearts play would shuffle differently from the first time.
+      - `game_history` must record the undo (e.g. an `Undo` action) so
+        stored games still replay to the same result; bump `RULES_VERSION`
+        if the replay rules change.
+      - Decide who may undo (presumably only the player who moved, before
+        the next player acts) and show it to the table.
+- [ ] **The "N left to discard" count is sometimes hidden** behind raised
+      (selected) cards.
+- [ ] **Make empty hand slots more visible.**
+- [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
+      Nothing host-specific was found; the silent case was a page that hadn't
+      been interacted with since it loaded, which now shows a "tap to turn on
+      the turn sound" hint (Done, below). If it's still silent after tapping
+      that, the cause is outside the page - Brave's site Sound/Autoplay
+      settings, a muted tab, or the audio output.
 
 ### Testing & infra
 
@@ -66,6 +96,7 @@ open are now closed, and a couple that read as closed turned out to be partial.
       effectively random. `Room::last_starter` now records the seat that went
       first (set on create and on every deal, and moved with its person by
       `reassign_seats`), and the next deal starts from the seat after it.
+      (Also reported as "the starting player should rotate each round".)
 - [x] **Grouped play log** (`play_log`) and **whole-game log** (`game_log`,
       capped at 200 entries).
 - [x] **A yield is recorded as a play**, so the board shows "Yield" instead of
@@ -133,7 +164,15 @@ open are now closed, and a couple that read as closed turned out to be partial.
       was host-then-newest with no idea who was connected. `Room::live`
       (in memory, `serde(skip)`) counts open sockets per member token via a
       drop guard in `handle_socket`, and `reassign_seats` now orders host,
-      then connected, then newest.
+      then connected, then newest. Seats are compacted, so someone at seat 3
+      of a 4-seat game moves into an empty player seat rather than being
+      benched. (Also reported as "NewGame re-deals the same seat numbers".)
+- [x] **An open connection follows its player to a new seat.** The socket
+      resolved its seat once, on connect, so after a re-deal that moved seats
+      every open connection was shown - and authorized as - whoever inherited
+      its old seat number until it reconnected. It now looks the seat up from
+      the token on every use, and authorizes and applies an action under one
+      lock.
 - [x] **Rooms persisted before seat tokens are playable again.** Their members
       load with an empty token, which authenticates nobody, so those seats were
       held forever. A joiner now reclaims one: a matching name takes that
@@ -186,6 +225,11 @@ open are now closed, and a couple that read as closed turned out to be partial.
       snapshots, and dropped when the push service reports them gone. The app
       has a web manifest and icons so it can be added to the Home Screen, and
       iOS Safari players see a tip explaining that's how to get alerts.
+- [x] **Text fields don't trigger password managers.** A lone name box read
+      as a username field. Every input spreads `NO_AUTOFILL`
+      (`autocomplete="off"` plus the 1Password, LastPass, Bitwarden and
+      Dashlane opt-outs, since managers ignore `autocomplete` alone). (Also
+      reported as "the player name shouldn't be a username field".)
 - [x] **"Tap to turn on the turn sound" hint.** Browsers only let a page play
       audio after it has been interacted with since it loaded, so after a
       reload, a reopened link or a discarded-and-restored tab the chime was

@@ -67,8 +67,17 @@ const findKillingCombo = (hand: ParsedCard[], enemy: ParsedCard): number[] | nul
     return null;
 };
 
+// About half of random solo deals can beat the first Jack (measured: 12 hits
+// in 23 deals), so 8 deals still came up empty now and then - roughly one run
+// in 350, and it happened. 40 makes a miss vanishingly unlikely; the loop stops
+// at the first killing hand, so a normal run is no slower. Each deal is a page
+// load, hence the longer timeout: the default 30s could expire partway through
+// a long unlucky streak.
+const MAX_DEALS = 40;
+
 test('a defeated enemy card flies from the board to its pile', async ({ page }) => {
-    for (let attempt = 0; attempt < 8; attempt++) {
+    test.setTimeout(120_000);
+    for (let attempt = 0; attempt < MAX_DEALS; attempt++) {
         await page.setViewportSize({ width: 1280, height: 800 });
         await page.goto('http://localhost:5173');
         await page.click('button:has-text("1 Player")');
@@ -142,5 +151,5 @@ test('a defeated enemy card flies from the board to its pile', async ({ page }) 
         expect(newEnemyAlt && newEnemyAlt !== enemyAlt).toBeTruthy();
         return;
     }
-    throw new Error('Could not find a killing combo in 8 attempts');
+    throw new Error(`Could not find a killing combo in ${MAX_DEALS} deals`);
 });
