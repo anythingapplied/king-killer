@@ -85,6 +85,16 @@ body {
 
 /* ---- Hand row ---------------------------------------------------------- */
 
+/* The status pill above the hand ("YOUR TURN", "DISCARD N REMAINING").
+   A selected card lifts by 16% of its own height (Card.tsx), and a card is
+   never taller than the row, so the lift is at most 16% of --hand-h. The gap
+   below the pill must be at least that, or on wide screens - where cards fill
+   the row's full height - a raised card is drawn over the pill and hides the
+   discard count. Keep the 0.16 in step with Card.tsx's lift. */
+.hand-status {
+  padding-bottom: max(0.375rem, calc(var(--hand-h) * 0.16));
+}
+
 /* Slots share the row equally (flex-basis 0), so a 5-card and an 8-card hand
    both fill the width without overflowing, and each slot is capped at the
    width implied by the row height so a card never outgrows its row. */

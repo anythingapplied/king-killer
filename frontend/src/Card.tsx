@@ -59,7 +59,9 @@ const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, c
             onClick={onClick}
             // Lift is a share of the card's own height rather than a fixed 24px,
             // so selection reads the same on a 60px phone card and a 120px
-            // desktop one instead of nearly clearing the small card.
+            // desktop one instead of nearly clearing the small card. The hand
+            // leaves room for it above the row (.hand-status in index.css) -
+            // change the two together.
             animate={{ 
                 y: selected ? '-16%' : 0,
                 scale: 1,

@@ -147,7 +147,7 @@ const HandArea: React.FC<HandAreaProps> = ({
     return (
         <div data-testid="hand-area" className="flex flex-col items-center relative px-2 sm:px-4 pb-1.5">
             {/* Status Indicator Above Hand */}
-            <div className="flex items-center justify-center py-1.5 sm:py-2">
+            <div className="hand-status flex items-center justify-center pt-1.5 sm:pt-2">
                 <div className={`t-label px-4 sm:px-10 py-1 sm:py-1.5 rounded-full font-black border shadow-xl text-center max-w-full truncate transition-all duration-300 ${isChoosing ? 'bg-purple-600 border-purple-400 text-white' : isDiscarding ? 'bg-red-600 border-red-400 text-white animate-pulse' : isMyTurn ? 'bg-blue-600 border-blue-400 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-500 opacity-60'}`}>
                     {statusText}
                 </div>
