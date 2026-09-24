@@ -180,6 +180,15 @@ struct Room {
     /// reconnect, which they do on their own.
     #[serde(skip)]
     live: HashMap<String, usize>,
+    /// The seat that went first in the current game, so the next deal can
+    /// start with the seat after it. Kept pointing at the same person when
+    /// `reassign_seats` moves seats. `current_player_index` can't stand in for
+    /// this - by the time the host deals again it's whoever's turn it happens
+    /// to be, which made the rotation look random. `None` for rooms saved
+    /// before this existed; their next deal keeps `GameState::new`'s random
+    /// pick and the rotation starts from there.
+    #[serde(default)]
+    last_starter: Option<usize>,
 }
 
 impl Room {
@@ -347,6 +356,15 @@ fn reassign_seats(room: &mut Room, player_count: usize) {
         }
     }
 
+    // Same for who went first: the rotation continues from that *person*, not
+    // from whoever inherited their old seat number. A seat nobody held has no
+    // mapping; its number is kept, which the rotation's modulo keeps in range.
+    if let Some(starter) = room.last_starter {
+        if let Some(&new_seat) = moved.get(&starter) {
+            room.last_starter = Some(new_seat);
+        }
+    }
+
     let _ = player_count; // seats above it are spectators by definition
 }
 
@@ -373,11 +391,18 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
     // enough on its own if the table shrank past the previous starter's
     // seat - no explicit fallback needed, since "next seat after N" is
     // always in range for whatever the new player_count is.
-    let previous_starter = room.game.current_player_index;
+    //
+    // The previous starter is `last_starter` (already moved to its new seat
+    // by reassign_seats above), NOT `room.game.current_player_index`: that is
+    // whoever's turn it was when the host dealt again, so rotating from it
+    // made the next starter effectively random.
     let mut game = GameState::new(num_players.clamp(1, 4));
     if player_count > 1 {
-        game.current_player_index = (previous_starter + 1) % player_count;
+        if let Some(previous_starter) = room.last_starter {
+            game.current_player_index = (previous_starter + 1) % player_count;
+        }
     }
+    room.last_starter = Some(game.current_player_index);
     for (i, name) in names.into_iter().enumerate() {
         if let Some(p) = game.players.get_mut(i) {
             p.name = name;
@@ -598,6 +623,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     game,
                     chat: Vec::new(),
                     live: HashMap::new(),
+                    last_starter: None,
                 },
             );
         } else {
@@ -801,12 +827,16 @@ async fn create_game(
         joined_seq: 0,
     });
 
+    // The first deal's starter is GameState::new's random pick; remember it so
+    // the next deal rotates on from there.
+    let starter = game.current_player_index;
     let room = Room {
         id: id.clone(),
         members,
         game,
         chat: Vec::new(),
         live: HashMap::new(),
+        last_starter: Some(starter),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -1221,6 +1251,7 @@ mod tests {
             game,
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         persist_room(&pool, &room).await;
@@ -1296,6 +1327,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         persist_room(&pool, &good).await;
 
@@ -1322,6 +1354,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -1352,6 +1385,7 @@ mod tests {
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         // Shrink to two players. Seats are reassigned by host-then-recency, so
@@ -1367,48 +1401,106 @@ mod tests {
         assert_eq!(room.members.len(), 3);
     }
 
-    #[tokio::test]
-    async fn a_new_deal_starts_with_the_player_after_whoever_went_first_last_time() {
-        let mut room = Room {
+    /// Host, Bob, Carol in seats 0-2. joined_seq is newest-first in seat
+    /// order, so reassign_seats (host, then newest) leaves every seat where it
+    /// is and the rotation can be read straight off the seat numbers.
+    fn rotation_room(last_starter: Option<usize>) -> Room {
+        Room {
             id: "ROTATE".to_string(),
             members: vec![
                 Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
-                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 2 },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 1 },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
-        };
-        room.game.current_player_index = 1; // Bob went first last time
+            last_starter,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_deal_starts_with_the_player_after_whoever_went_first_last_time() {
+        let mut room = rotation_room(Some(1)); // Bob went first last game
+        // The reported bug: the host deals again mid-game, on Carol's turn.
+        // Rotating from *whose turn it is* would pick (2 + 1) % 3 = the host.
+        room.game.current_player_index = 2;
 
         deal_new_game(&mut room, 3);
-        assert_eq!(room.game.current_player_index, 2, "Carol follows Bob");
+        assert_eq!(room.game.current_player_index, 2, "Carol follows Bob, whoever's turn it was");
+        assert_eq!(room.last_starter, Some(2));
 
-        room.game.current_player_index = 2; // wrap around
+        // Mid-game again, this time on the host's turn: still rotates from Carol.
+        room.game.current_player_index = 0;
         deal_new_game(&mut room, 3);
         assert_eq!(room.game.current_player_index, 0, "wraps back to the host");
+
+        deal_new_game(&mut room, 3);
+        assert_eq!(room.game.current_player_index, 1, "and on around the table");
+    }
+
+    #[tokio::test]
+    async fn the_rotation_follows_the_starter_when_seats_move() {
+        // Bob started from seat 1, but a new arrival reorders the table on the
+        // re-deal (host, then newest): Dana takes seat 1 and Bob moves down.
+        // The next starter is whoever now sits after *Bob*, not after seat 1.
+        let mut room = rotation_room(Some(1));
+        room.members.push(Member { seat: 3, name: "Dana".to_string(), host: false, token: "tok3".to_string(), joined_seq: 3 });
+        room.game = GameState::new(4);
+
+        deal_new_game(&mut room, 4);
+
+        let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
+        assert_eq!(seat_of("Dana"), 1, "the newest arrival sits right after the host");
+        assert_eq!(seat_of("Bob"), 2);
+        assert_eq!(room.game.current_player_index, 3, "the seat after Bob's new seat starts");
+        assert_eq!(seat_of("Carol"), 3);
+    }
+
+    #[tokio::test]
+    async fn a_room_from_before_the_rotation_was_tracked_starts_tracking_it() {
+        // No recorded starter: keep GameState::new's pick, and remember it so
+        // the deal after that rotates.
+        let mut room = rotation_room(None);
+        deal_new_game(&mut room, 3);
+        let first = room.game.current_player_index;
+        assert_eq!(room.last_starter, Some(first));
+        deal_new_game(&mut room, 3);
+        assert_eq!(room.game.current_player_index, (first + 1) % 3);
+    }
+
+    #[tokio::test]
+    async fn creating_a_room_records_who_goes_first() {
+        let state = test_state().await;
+        let created = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 3, player_name: None }))
+            .await
+            .unwrap()
+            .0;
+        let room = state.rooms.read().unwrap()[&created.id].clone();
+        assert_eq!(room.last_starter, Some(room.game.current_player_index));
     }
 
     #[tokio::test]
     async fn rotation_stays_in_range_if_the_table_shrank_past_the_last_starter() {
         // The modulo in deal_new_game means "the next seat after the previous
-        // starter" is always well-defined in the *new* table, even when that
-        // exact seat no longer exists - (2 + 1) % 2 is 1, not an out-of-range
-        // 3. Nothing needs an explicit fallback; this pins that the formula
-        // alone is enough.
+        // starter" is always well-defined in the *new* table, even when the
+        // starter is no longer seated at it - (2 + 1) % 2 is 1, not an
+        // out-of-range 3. Nothing needs an explicit fallback; this pins that
+        // the formula alone is enough. Carol is the oldest joiner, so the
+        // re-deal (host, then newest) seats Host and Bob and she watches from
+        // seat 2.
         let mut room = Room {
             id: "SHRINK".to_string(),
             members: vec![
                 Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 },
-                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 1 },
-                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 2 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tok1".to_string(), joined_seq: 2 },
+                Member { seat: 2, name: "Carol".to_string(), host: false, token: "tok2".to_string(), joined_seq: 1 },
             ],
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: Some(2), // Carol went first
         };
-        room.game.current_player_index = 2; // Carol went first
 
         deal_new_game(&mut room, 2); // Carol's own seat no longer exists
 
@@ -1424,6 +1516,7 @@ mod tests {
             game: GameState::new(1),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
@@ -1518,6 +1611,7 @@ mod tests {
             game: GameState::new(4),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         deal_new_game(&mut room, 2);
@@ -1546,6 +1640,7 @@ mod tests {
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         room.push_chat(1, "said by Early");
         room.push_chat(2, "said by Newest");
@@ -1579,6 +1674,7 @@ mod tests {
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         deal_new_game(&mut room, 2);
@@ -1611,6 +1707,7 @@ mod tests {
             game: GameState::new(4),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         for _ in 0..4 {
             claim_seat(&mut room, None);
@@ -1632,6 +1729,7 @@ mod tests {
             game,
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         })
         .await;
         let game = GameState::new(2);
@@ -1654,6 +1752,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -1687,6 +1786,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
 
         deal_new_game(&mut room, 3);
@@ -1709,6 +1809,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         }
     }
 
@@ -1754,6 +1855,7 @@ mod tests {
             game: GameState::new(4),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         let mut issued = Vec::new();
         for name in ["a", "b", "c", "d"] {
@@ -1776,6 +1878,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         }
     }
 
@@ -1813,6 +1916,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
         assert!(is_player);
@@ -1958,6 +2062,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         room.push_chat(0, "hello");
         room
@@ -2142,6 +2247,7 @@ mod tests {
             game: GameState::new(2),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         }
     }
 
@@ -2518,6 +2624,7 @@ mod tests {
             game: GameState::new(4),
             chat: Vec::new(),
             live: HashMap::from([("t0".to_string(), 1), ("t1".to_string(), 1), ("t3".to_string(), 1)]),
+            last_starter: None,
         };
 
         deal_new_game(&mut room, 3);
@@ -2544,6 +2651,7 @@ mod tests {
             game: GameState::new(3),
             chat: Vec::new(),
             live: HashMap::new(),
+            last_starter: None,
         };
         deal_new_game(&mut room, 2);
         let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
