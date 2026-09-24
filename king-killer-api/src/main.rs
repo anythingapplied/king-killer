@@ -1075,13 +1075,21 @@ impl Drop for LiveGuard {
     }
 }
 
+/// The seat `token` holds in room `id` right now.
+///
+/// Identity is the token; the seat is only where that person currently sits,
+/// and a re-deal moves it (`reassign_seats`). So a connection must look its
+/// seat up each time it uses it - never cache the one it had when it opened.
+fn current_seat(rooms: &HashMap<String, Room>, id: &str, token: Option<&str>) -> Option<usize> {
+    rooms.get(id).and_then(|room| seat_for_token(room, token))
+}
+
 async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, state: AppState) {
-    // Resolve identity once, from the token. Seats never move between members,
-    // so this stays valid for the life of the connection.
-    let seat = {
-        let rooms = state.rooms.read().unwrap();
-        rooms.get(&id).and_then(|room| seat_for_token(room, token.as_deref()))
-    };
+    // The seat as the connection opens: used for membership (LiveGuard) and
+    // the first snapshot. Everything after re-resolves it - a re-deal moves
+    // seats, and a connection that kept this one would be shown, and act as,
+    // whoever inherited its old seat number.
+    let seat = current_seat(&state.rooms.read().unwrap(), &id, token.as_deref());
     // Held until this function returns, i.e. for the life of the connection.
     // Only an authenticated member counts; an observer isn't anyone to seat.
     let _live = seat.and(token.as_deref()).map(|t| LiveGuard::new(&state.rooms, &id, t));
@@ -1116,6 +1124,8 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
     }
 
     let mut rx = rx;
+    let state_send = state.clone();
+    let (id_send, token_send) = (id.clone(), token.clone());
     let mut send_task = tokio::spawn(async move {
         loop {
             // A private error and a room update can arrive at the same instant
@@ -1128,8 +1138,10 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                 room_state = rx.recv() => match room_state {
                     Ok(ServerMessage::State(snap)) => {
                         // The channel carries one unredacted snapshot; each
-                        // connection narrows it before serializing.
-                        Some(ServerMessage::State(redact_for(&snap, seat)))
+                        // connection narrows it to the seat it holds *now*,
+                        // which a re-deal may just have changed.
+                        let seat_now = current_seat(&state_send.rooms.read().unwrap(), &id_send, token_send.as_deref());
+                        Some(ServerMessage::State(redact_for(&snap, seat_now)))
                     }
                     Ok(ServerMessage::Error { .. }) => None, // never broadcast; unreachable
                     // Fell behind and missed some updates - not fatal. The very
@@ -1157,32 +1169,28 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
         let err_tx = recv_err_tx;
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             if let Ok(action) = serde_json::from_str::<GameAction>(&text) {
-                // Authorization and dispatch both live in pure functions above,
-                // so the handler itself is only frames, locks and I/O.
-                let authorized = {
-                    let rooms = state_recv.rooms.read().unwrap();
-                    should_apply(&action, seat, rooms.get(&id))
-                };
-                if !authorized {
-                    // Distinct from a rejection inside apply_action: this is a
-                    // permission the player was never going to have (someone
-                    // else's turn, a non-host trying to redeal), not a mistake
-                    // in a legal attempt, so it's left silent rather than
-                    // narrating what the UI already hides or disables.
-                    continue;
-                }
-
                 let type_label = action_type(&action);
 
+                // Resolve the seat, authorize and apply under one lock: with
+                // separate read-then-write locks a re-deal could land in
+                // between and the action would run as a seat that was
+                // checked against the old table. Authorization and dispatch
+                // both live in pure functions above, so this is only locking.
                 let (room, result) = {
                     let mut rooms = state_recv.rooms.write().unwrap();
-                    match rooms.get_mut(&id) {
-                        Some(room) => {
-                            let result = apply_action(room, &action, seat);
-                            (Some(room.clone()), result)
-                        }
-                        None => (None, Err("Room no longer exists".to_string())),
+                    let Some(room) = rooms.get_mut(&id) else { continue };
+                    let seat = seat_for_token(room, token.as_deref());
+                    if !should_apply(&action, seat, Some(room)) {
+                        // Distinct from a rejection inside apply_action: this is
+                        // a permission the player was never going to have
+                        // (someone else's turn, a non-host trying to redeal),
+                        // not a mistake in a legal attempt, so it's left silent
+                        // rather than narrating what the UI already hides or
+                        // disables.
+                        continue;
                     }
+                    let result = apply_action(room, &action, seat);
+                    (Some(room.clone()), result)
                 };
 
                 if let Err(message) = result {
@@ -2349,11 +2357,14 @@ mod tests {
             .unwrap()
     }
 
-    /// True when no card in any hand, the Tavern or the castle names a suit -
-    /// i.e. everything a reader isn't entitled to is a face-down placeholder.
+    /// True when every card in every hand (bar `except_seat`'s) is a face-down
+    /// placeholder. Judged by id, which `face_down` takes from the top of the
+    /// u32 range - not by a missing suit, since a real Jester has no suit
+    /// either and a leaked one would pass unnoticed.
     fn hands_are_hidden(game: &serde_json::Value, except_seat: Option<usize>) -> bool {
         game["players"].as_array().unwrap().iter().enumerate().all(|(i, p)| {
-            Some(i) == except_seat || p["hand"].as_array().unwrap().iter().all(|c| c["suit"].is_null())
+            Some(i) == except_seat
+                || p["hand"].as_array().unwrap().iter().all(|c| c["id"].as_u64().unwrap() > (u32::MAX - 1000) as u64)
         })
     }
 
@@ -2722,5 +2733,65 @@ mod tests {
             assert!(Instant::now() < deadline, "the closed connection was never un-counted");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn ws_an_open_connection_follows_its_player_to_a_new_seat_after_a_redeal() {
+        // The socket used to resolve its seat once, on connect. A re-deal
+        // moves seats, so afterwards every open connection was shown - and
+        // authorized as - whoever inherited its *old* seat number. Seats are
+        // pinned here so the re-deal is guaranteed to move Dana (3 -> 1) and
+        // Bob (1 -> 2).
+        let state = test_state().await;
+        let host = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 4, player_name: Some("Host".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let mut tokens = HashMap::new();
+        for name in ["Bob", "Dana", "Ghost"] {
+            let joined = join_game_seat(Path(host.id.clone()), State(state.clone()), Json(JoinRequest { name: Some(name.into()) }))
+                .await
+                .unwrap()
+                .0;
+            tokens.insert(name, joined.token);
+        }
+        {
+            let mut rooms = state.rooms.write().unwrap();
+            let room = rooms.get_mut(&host.id).unwrap();
+            for m in room.members.iter_mut() {
+                m.seat = match m.name.as_str() { "Host" => 0, "Bob" => 1, "Ghost" => 2, _ => 3 };
+            }
+        }
+
+        let addr = serve(&state).await;
+        let mut host_ws = connect(addr, &host.id, Some(&host.token)).await;
+        let mut bob_ws = connect(addr, &host.id, Some(&tokens["Bob"])).await;
+        let mut dana_ws = connect(addr, &host.id, Some(&tokens["Dana"])).await;
+        recv(&mut host_ws).await;
+        recv(&mut bob_ws).await;
+        assert_eq!(recv(&mut dana_ws).await["payload"]["you"], 3, "Dana starts in seat 3");
+
+        // Host, then connected newest-first (Dana, Bob), then the absent Ghost.
+        send(&mut host_ws, serde_json::json!({ "type": "NewGame", "payload": { "num_players": 3 } })).await;
+        let dana_view = recv(&mut dana_ws).await;
+        let bob_view = recv(&mut bob_ws).await;
+        recv(&mut host_ws).await;
+
+        assert_eq!(dana_view["payload"]["you"], 1, "Dana's connection learns her new seat");
+        assert_eq!(bob_view["payload"]["you"], 2, "and Bob's his");
+        let game = &dana_view["payload"]["game"];
+        // Checked by id, not suit: a 3-player deck has a Jester, which has no
+        // suit even face up. Face-down placeholders take ids from the top of
+        // the u32 range (see `face_down`).
+        let face_down = |c: &serde_json::Value| c["id"].as_u64().unwrap() > (u32::MAX - 1000) as u64;
+        assert!(game["players"][1]["hand"].as_array().unwrap().iter().all(|c| !face_down(c)), "Dana sees her own new hand");
+        assert!(hands_are_hidden(game, Some(1)), "and nobody else's - not the hand of the seat she used to hold");
+
+        // Acting goes through the new seat too: her chat is credited to seat 1.
+        send(&mut dana_ws, serde_json::json!({ "type": "SendChat", "payload": { "text": "moved" } })).await;
+        let seen = recv(&mut host_ws).await;
+        let chat = seen["payload"]["chat"].as_array().unwrap();
+        let last = chat.last().unwrap();
+        assert_eq!((last["seat"].as_u64(), last["name"].as_str()), (Some(1), Some("Dana")));
     }
 }
