@@ -3,6 +3,7 @@ import type { GameState, CombatEffect, RoomMember } from '../types';
 import Card from '../Card';
 import { motion, AnimatePresence } from 'framer-motion';
 import { spectatorNumber } from '../spectatorLabel';
+import { NO_AUTOFILL } from '../noAutofill';
 
 interface HUDProps {
     gameId: string;
@@ -114,6 +115,7 @@ const HUD: React.FC<HUDProps> = ({
                 {editingName ? (
                     <input
                         autoFocus
+                        {...NO_AUTOFILL}
                         maxLength={20}
                         value={draftName}
                         onChange={(e) => setDraftName(e.target.value)}
