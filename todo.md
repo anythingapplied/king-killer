@@ -14,10 +14,21 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [ ] **Chat and the game log shouldn't cover the board.** Both open as
       full-screen modals. On a big enough screen they should be panels you
       can have open together while still playing.
-- [ ] **Undo for moves that were neither random nor revealing** - e.g. a
-      play whose only effect was Hearts, with no draw and no new enemy.
-      Anything that drew a card, flipped an enemy or shuffled must stay
-      final.
+- [ ] **Undo for moves that didn't reveal anything.** Decided: keep a
+      snapshot of the state from before each move and restore it, rather
+      than trying to reverse the move. That makes a Hearts play undoable
+      even though it shuffles the discard pile into the Tavern - the new
+      order is never shown to anyone, so nothing is learned. A move that
+      *reveals* something must stay final: drawing cards (Diamonds, a
+      refill), a new enemy coming up, or anything else that puts hidden
+      cards face up. Notes for whoever builds it:
+      - The snapshot has to include the RNG state, or undoing and replaying
+        the same Hearts play would shuffle differently from the first time.
+      - `game_history` must record the undo (e.g. an `Undo` action) so
+        stored games still replay to the same result; bump `RULES_VERSION`
+        if the replay rules change.
+      - Decide who may undo (presumably only the player who moved, before
+        the next player acts) and show it to the table.
 - [ ] **The "N left to discard" count is sometimes hidden** behind raised
       (selected) cards.
 - [ ] **Make empty hand slots more visible.**
