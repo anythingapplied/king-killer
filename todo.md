@@ -60,6 +60,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
       favoritism; `deal_new_game` now overrides it with an explicit rotation.
       Wraps around the table, including when it shrank past the previous
       starter's seat. Solo doesn't rotate (nothing to rotate to).
+- [x] **The start rotation really rotates.** The item above read "who went
+      first" from `current_player_index` at deal time - whoever's turn it
+      happened to be when the host pressed New - so the next starter was
+      effectively random. `Room::last_starter` now records the seat that went
+      first (set on create and on every deal, and moved with its person by
+      `reassign_seats`), and the next deal starts from the seat after it.
 - [x] **Grouped play log** (`play_log`) and **whole-game log** (`game_log`,
       capped at 200 entries).
 - [x] **A yield is recorded as a play**, so the board shows "Yield" instead of
