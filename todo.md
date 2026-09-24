@@ -122,6 +122,14 @@ open are now closed, and a couple that read as closed turned out to be partial.
       unparseable row is skipped and logged, and left in the database.
 - [x] **`create_game` input validation**: a player count outside 1–4 panicked
       the handler.
+- [x] **A re-deal seats people who are actually connected.** Re-dealing a
+      4-player game as 3 benched a player at the table and seated a member who
+      wasn't there: members are never removed, a join without a saved token
+      (another device, a private window) mints a new one, and the ordering
+      was host-then-newest with no idea who was connected. `Room::live`
+      (in memory, `serde(skip)`) counts open sockets per member token via a
+      drop guard in `handle_socket`, and `reassign_seats` now orders host,
+      then connected, then newest.
 - [x] **Rooms persisted before seat tokens are playable again.** Their members
       load with an empty token, which authenticates nobody, so those seats were
       held forever. A joiner now reclaims one: a matching name takes that

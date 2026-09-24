@@ -171,9 +171,23 @@ struct Room {
     /// keeps rooms persisted before chat existed loadable.
     #[serde(default)]
     chat: Vec<ChatMessage>,
+    /// Open WebSocket connections per member token, so a re-deal can tell who
+    /// is actually here. Members are never removed, and a join without a saved
+    /// token (another device, a private window, cleared storage) mints a new
+    /// one - so the roster fills with seats nobody is sitting in.
+    ///
+    /// In memory only: after a restart nobody is connected until clients
+    /// reconnect, which they do on their own.
+    #[serde(skip)]
+    live: HashMap<String, usize>,
 }
 
 impl Room {
+    /// Whether this member has at least one open connection right now.
+    fn is_live(&self, member: &Member) -> bool {
+        !member.token.is_empty() && self.live.get(&member.token).is_some_and(|&n| n > 0)
+    }
+
     /// Appends a chat message from `seat`.
     ///
     /// The sender must actually be in the roster - the seat arrives from a
@@ -306,9 +320,12 @@ fn reassign_seats(room: &mut Room, player_count: usize) {
     let mut order: Vec<usize> = (0..room.members.len()).collect();
     order.sort_by_key(|&i| {
         let m = &room.members[i];
-        // Host first, then newest arrival first. `!host` puts true (the host)
-        // at 0; Reverse makes a higher joined_seq sort earlier.
-        (!m.host, std::cmp::Reverse(m.joined_seq))
+        // Host first, then whoever is connected right now, then newest arrival
+        // first. Recency alone let a member who had left - often a stale seat
+        // from an earlier join on another device - outrank someone at the
+        // table, who was then benched to watch. `!` puts true at 0; Reverse
+        // makes a higher joined_seq sort earlier.
+        (!m.host, !room.is_live(m), std::cmp::Reverse(m.joined_seq))
     });
 
     // Old seat -> new seat, built before anything moves.
@@ -580,6 +597,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     members,
                     game,
                     chat: Vec::new(),
+                    live: HashMap::new(),
                 },
             );
         } else {
@@ -788,6 +806,7 @@ async fn create_game(
         members,
         game,
         chat: Vec::new(),
+        live: HashMap::new(),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -993,6 +1012,39 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, id, params.token, state))
 }
 
+/// Counts one open connection toward its member's `Room::live` for as long as
+/// it exists. Dropping it (however `handle_socket` ends) takes the count back.
+struct LiveGuard {
+    rooms: Arc<RwLock<HashMap<String, Room>>>,
+    room_id: String,
+    token: String,
+}
+
+impl LiveGuard {
+    fn new(rooms: &Arc<RwLock<HashMap<String, Room>>>, room_id: &str, token: &str) -> Self {
+        if let Some(room) = rooms.write().unwrap().get_mut(room_id) {
+            *room.live.entry(token.to_string()).or_insert(0) += 1;
+        }
+        LiveGuard { rooms: rooms.clone(), room_id: room_id.to_string(), token: token.to_string() }
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        // A poisoned lock means the server is already failing; don't panic
+        // again inside a destructor.
+        let Ok(mut rooms) = self.rooms.write() else { return };
+        if let Some(room) = rooms.get_mut(&self.room_id) {
+            if let Some(n) = room.live.get_mut(&self.token) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    room.live.remove(&self.token);
+                }
+            }
+        }
+    }
+}
+
 async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, state: AppState) {
     // Resolve identity once, from the token. Seats never move between members,
     // so this stays valid for the life of the connection.
@@ -1000,6 +1052,9 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
         let rooms = state.rooms.read().unwrap();
         rooms.get(&id).and_then(|room| seat_for_token(room, token.as_deref()))
     };
+    // Held until this function returns, i.e. for the life of the connection.
+    // Only an authenticated member counts; an observer isn't anyone to seat.
+    let _live = seat.and(token.as_deref()).map(|t| LiveGuard::new(&state.rooms, &id, t));
     touch(&state.last_activity);
     let rx = {
         let broadcasts = state.broadcasts.read().unwrap();
@@ -1165,6 +1220,7 @@ mod tests {
             ],
             game,
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         persist_room(&pool, &room).await;
@@ -1239,6 +1295,7 @@ mod tests {
             members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         persist_room(&pool, &good).await;
 
@@ -1264,6 +1321,7 @@ mod tests {
             members: vec![Member { seat: 0, name: "Host".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -1293,6 +1351,7 @@ mod tests {
             ],
             game: GameState::new(3),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         // Shrink to two players. Seats are reassigned by host-then-recency, so
@@ -1319,6 +1378,7 @@ mod tests {
             ],
             game: GameState::new(3),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         room.game.current_player_index = 1; // Bob went first last time
 
@@ -1346,6 +1406,7 @@ mod tests {
             ],
             game: GameState::new(3),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         room.game.current_player_index = 2; // Carol went first
 
@@ -1362,6 +1423,7 @@ mod tests {
             members: vec![Member { seat: 0, name: "Alone".to_string(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game: GameState::new(1),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
@@ -1455,6 +1517,7 @@ mod tests {
             ],
             game: GameState::new(4),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1482,6 +1545,7 @@ mod tests {
             ],
             game: GameState::new(3),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         room.push_chat(1, "said by Early");
         room.push_chat(2, "said by Newest");
@@ -1514,6 +1578,7 @@ mod tests {
             ],
             game: GameState::new(3),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1545,6 +1610,7 @@ mod tests {
             members: vec![],
             game: GameState::new(4),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         for _ in 0..4 {
             claim_seat(&mut room, None);
@@ -1565,6 +1631,7 @@ mod tests {
             members: vec![Member { seat: 0, name: String::new(), host: true, token: "tok0".to_string(), joined_seq: 0 }],
             game,
             chat: Vec::new(),
+            live: HashMap::new(),
         })
         .await;
         let game = GameState::new(2);
@@ -1586,6 +1653,7 @@ mod tests {
             members: vec![],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -1618,6 +1686,7 @@ mod tests {
             ],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -1639,6 +1708,7 @@ mod tests {
             ],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         }
     }
 
@@ -1683,6 +1753,7 @@ mod tests {
             members: vec![],
             game: GameState::new(4),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         let mut issued = Vec::new();
         for name in ["a", "b", "c", "d"] {
@@ -1704,6 +1775,7 @@ mod tests {
             ],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         }
     }
 
@@ -1740,6 +1812,7 @@ mod tests {
             members: vec![Member { seat: 0, name: "Alice".to_string(), host: true, token: String::new(), joined_seq: 0 }],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
         assert!(is_player);
@@ -1884,6 +1957,7 @@ mod tests {
             ],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         };
         room.push_chat(0, "hello");
         room
@@ -2067,6 +2141,7 @@ mod tests {
             ],
             game: GameState::new(2),
             chat: Vec::new(),
+            live: HashMap::new(),
         }
     }
 
@@ -2422,5 +2497,122 @@ mod tests {
         assert_eq!(chat[0]["seat"], 1);
         assert_eq!(chat[0]["name"], "Bob");
         assert_eq!(chat[0]["text"], "hi all");
+    }
+
+    // ---- Re-deal seats people who are actually here ----
+
+    #[test]
+    fn a_smaller_redeal_seats_a_connected_player_over_a_newer_absent_one() {
+        // The reported case: 4 seats re-dealt as 3. The "ghost" in seat 2
+        // joined most recently but isn't connected (a stale seat from a join on
+        // another device); the player in seat 3 is at the table. Recency alone
+        // benched the real player and seated the ghost.
+        let mut room = Room {
+            id: "GHOST".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "t0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "t1".to_string(), joined_seq: 1 },
+                Member { seat: 3, name: "Dana".to_string(), host: false, token: "t3".to_string(), joined_seq: 2 },
+                Member { seat: 2, name: "Ghost".to_string(), host: false, token: "t2".to_string(), joined_seq: 3 },
+            ],
+            game: GameState::new(4),
+            chat: Vec::new(),
+            live: HashMap::from([("t0".to_string(), 1), ("t1".to_string(), 1), ("t3".to_string(), 1)]),
+        };
+
+        deal_new_game(&mut room, 3);
+
+        let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
+        assert!(seat_of("Dana") < 3, "the connected player gets a seat at the new table");
+        assert_eq!(seat_of("Ghost"), 3, "the absent member watches");
+        assert!(seat_of("Host") < 3 && seat_of("Bob") < 3);
+        assert!(room.game.players.iter().any(|p| p.name == "Dana"));
+        assert!(room.game.players.iter().all(|p| p.name != "Ghost"));
+    }
+
+    #[test]
+    fn with_nobody_connected_a_redeal_still_falls_back_to_recency() {
+        // Right after a restart nobody has reconnected yet; the old ordering
+        // must still apply rather than scrambling seats.
+        let mut room = Room {
+            id: "COLD".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Host".to_string(), host: true, token: "t0".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Early".to_string(), host: false, token: "t1".to_string(), joined_seq: 1 },
+                Member { seat: 2, name: "Late".to_string(), host: false, token: "t2".to_string(), joined_seq: 2 },
+            ],
+            game: GameState::new(3),
+            chat: Vec::new(),
+            live: HashMap::new(),
+        };
+        deal_new_game(&mut room, 2);
+        let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
+        assert_eq!(seat_of("Late"), 1);
+        assert_eq!(seat_of("Early"), 2);
+    }
+
+    #[tokio::test]
+    async fn ws_a_redeal_seats_the_players_who_are_connected() {
+        // End to end over real sockets: four joins, one of which never
+        // connects, then the host re-deals for three.
+        let state = test_state().await;
+        let host = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 4, player_name: Some("Host".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let join = |name: &'static str| {
+            let state = state.clone();
+            let id = host.id.clone();
+            async move {
+                join_game_seat(Path(id), State(state), Json(JoinRequest { name: Some(name.into()) }))
+                    .await
+                    .unwrap()
+                    .0
+            }
+        };
+        let bob = join("Bob").await;
+        let dana = join("Dana").await;
+        let _ghost = join("Ghost").await; // newest arrival, never connects
+
+        let addr = serve(&state).await;
+        let mut host_ws = connect(addr, &host.id, Some(&host.token)).await;
+        let mut bob_ws = connect(addr, &host.id, Some(&bob.token)).await;
+        let mut dana_ws = connect(addr, &host.id, Some(&dana.token)).await;
+        for ws in [&mut host_ws, &mut bob_ws, &mut dana_ws] {
+            recv(ws).await;
+        }
+
+        send(&mut host_ws, serde_json::json!({ "type": "NewGame", "payload": { "num_players": 3 } })).await;
+        let msg = recv(&mut dana_ws).await;
+        let you = msg["payload"]["you"].as_u64().unwrap();
+        assert!(you < 3, "Dana is connected, so she plays (got seat {you})");
+        let ghost_seat = msg["payload"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "Ghost")
+            .unwrap()["seat"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(ghost_seat, 3, "the member who never connected watches");
+    }
+
+    #[tokio::test]
+    async fn ws_closing_a_connection_stops_counting_it_as_present() {
+        let state = test_state().await;
+        let (id, alice_token, _) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        recv(&mut alice).await;
+        assert_eq!(state.rooms.read().unwrap()[&id].live.get(&alice_token), Some(&1));
+
+        alice.close(None).await.unwrap();
+        // The server notices the close asynchronously.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.rooms.read().unwrap()[&id].live.contains_key(&alice_token) {
+            assert!(Instant::now() < deadline, "the closed connection was never un-counted");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
