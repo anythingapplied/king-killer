@@ -11,9 +11,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Testing & infra
 
-- [ ] **Background-tab alert on mobile.** iOS suspends audio for backgrounded
-      tabs, so the turn chime is inaudible there. The tab-title flash only helps
-      on desktop; the Notifications API is the only thing that works unfocused.
+- [ ] **Turn alerts on iPhone need Web Push.** The page-only notification
+      (below, in Done) can't fire once iOS suspends a backgrounded page, which
+      it does almost at once. Reaching a suspended page needs the server to
+      send a push: a push subscription stored per member, VAPID keys as Fly
+      secrets, and a push sender in `king-killer-api`. On iOS it also only works
+      when the site is added to the home screen.
 
 ## Done
 
@@ -170,6 +173,13 @@ open are now closed, and a couple that read as closed turned out to be partial.
       1.1s, up from 0.45s). The board lags the server during that hold, so the
       in-play area still showed the old state and the winning cards were never
       seen.
+- [x] **Turn notifications for a hidden tab.** A HUD toggle asks for
+      notification permission from the click itself; when the turn arrives
+      while the page is hidden, a system notification is shown (one tag, so it
+      replaces rather than stacks; cleared when the page is visible again).
+      `public/sw.js` exists only because Chrome on Android shows notifications
+      solely through a service worker - it has no fetch handler. Page-only, so
+      it works on desktop and briefly on Android, not on iPhone (see Open).
 
 ### Tests & docs
 
