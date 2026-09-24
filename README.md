@@ -83,10 +83,12 @@ memory. The client's 30-second `Ping` deliberately does *not* reset the idle
 timer.
 
 **Identity comes from the socket, never the message body.** The WebSocket
-carries `?seat=N`; that is what authorizes host-only actions (`NewGame`,
-`Reset`) and acting as yourself (`SetName`, `SendChat`). Everything else targets
-the game's own `current_player_index`. Don't add an action that trusts a seat
-sent in its payload.
+carries `?token=...`, the seat secret issued at join; the server looks up which
+seat that token holds *each time it needs it* (a re-deal moves seats), and that
+is what authorizes host-only actions (`NewGame`, `Reset`) and acting as yourself
+(`SetName`, `SendChat`). Everything else targets the game's own
+`current_player_index`. Don't add an action that trusts a seat sent in its
+payload, and don't cache a connection's seat.
 
 ## Deploying
 
@@ -94,3 +96,21 @@ Fly.io, via the `Dockerfile` (`fly deploy`). `fly.toml` sets
 `auto_stop_machines` with `min_machines_running = 0`, which is the other half of
 the idle-shutdown behaviour above. The database lives on a mounted volume at
 `/data`.
+
+### Turn alerts by Web Push (optional)
+
+Players who turn on "Notify me on my turn" get a push when the turn reaches
+them while their page isn't running - which is how turn alerts reach an iPhone
+(the game must be added to the Home Screen there). Push is off until the server
+has a VAPID key:
+
+```bash
+node scripts/generate_vapid_keys.js
+fly secrets set VAPID_PRIVATE_KEY=<printed key> VAPID_SUBJECT=mailto:<your address>
+```
+
+The private key is a secret - set it with `fly secrets`, never commit it.
+`VAPID_SUBJECT` is a contact the push services can reach you at. Without the
+secrets the server logs that push is off and everything else works, including
+the page-only notification. Replacing the key later invalidates existing
+subscriptions; players re-subscribe by toggling notifications again.

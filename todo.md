@@ -11,12 +11,9 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Testing & infra
 
-- [ ] **Turn alerts on iPhone need Web Push.** The page-only notification
-      (below, in Done) can't fire once iOS suspends a backgrounded page, which
-      it does almost at once. Reaching a suspended page needs the server to
-      send a push: a push subscription stored per member, VAPID keys as Fly
-      secrets, and a push sender in `king-killer-api`. On iOS it also only works
-      when the site is added to the home screen.
+- [ ] **Set the VAPID secrets on Fly** (`scripts/generate_vapid_keys.js`,
+      then `fly secrets set` - see the README). Web Push is built but stays
+      off until the server has a key.
 
 ## Done
 
@@ -179,6 +176,16 @@ open are now closed, and a couple that read as closed turned out to be partial.
       1.1s, up from 0.45s). The board lags the server during that hold, so the
       in-play area still showed the old state and the winning cards were never
       seen.
+- [x] **Turn alerts by Web Push, including iPhone.** When the turn reaches a
+      player with no open connection (iOS closes a suspended page's socket),
+      the server pushes through the platform's push service to the service
+      worker. `king-killer-api/src/push.rs` implements RFC 8291 encryption and
+      RFC 8292 VAPID on RustCrypto (no OpenSSL), checked byte for byte against
+      `http_ece`. Subscriptions are per room and seat token, validated against
+      a push-service allowlist (the server POSTs to them), persisted, never in
+      snapshots, and dropped when the push service reports them gone. The app
+      has a web manifest and icons so it can be added to the Home Screen, and
+      iOS Safari players see a tip explaining that's how to get alerts.
 - [x] **"Tap to turn on the turn sound" hint.** Browsers only let a page play
       audio after it has been interacted with since it loaded, so after a
       reload, a reopened link or a discarded-and-restored tab the chime was

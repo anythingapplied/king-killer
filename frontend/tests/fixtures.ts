@@ -50,9 +50,21 @@ const waitForApi = (timeoutMs = 20000) =>
         attempt();
     });
 
+// A throwaway VAPID key (also used in push.rs's tests; never configured
+// anywhere real), so push endpoints are live in e2e runs.
+const TEST_VAPID_PRIVATE_KEY = 'p8tEkmvpi0mHc72WNCwqJGAdNhCMenUpA0RtRyrMeE0';
+export const TEST_VAPID_PUBLIC_KEY = 'BGO2rRWtDiFf81uThqnDSLAKJ8-yp8JMEOnPO6XGR0OuwxCS16srFYTQdsUksfqDIAOGn55iQshRbfUGLx_3bYE';
+
 const startApi = (dataDir: string): ChildProcess =>
     spawn(API_BINARY, [], {
-        env: { ...process.env, PORT: String(API_PORT), DATA_DIR: dataDir, IDLE_TIMEOUT_MINUTES: '30' },
+        env: {
+            ...process.env,
+            PORT: String(API_PORT),
+            DATA_DIR: dataDir,
+            IDLE_TIMEOUT_MINUTES: '30',
+            VAPID_PRIVATE_KEY: TEST_VAPID_PRIVATE_KEY,
+            VAPID_SUBJECT: 'mailto:e2e@example.com',
+        },
         stdio: 'ignore',
     });
 

@@ -474,6 +474,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn keys_from_the_generator_script_are_accepted_as_is() {
+        // Output of scripts/generate_vapid_keys.js (a throwaway pair made for
+        // this test - never configured anywhere). The server must take the
+        // private key exactly as printed and derive the same public key the
+        // script reports, or deploys would fail on a format mismatch.
+        let vapid = Vapid::new("p8tEkmvpi0mHc72WNCwqJGAdNhCMenUpA0RtRyrMeE0", "mailto:ops@example.com").unwrap();
+        assert_eq!(
+            vapid.public_key,
+            "BGO2rRWtDiFf81uThqnDSLAKJ8-yp8JMEOnPO6XGR0OuwxCS16srFYTQdsUksfqDIAOGn55iQshRbfUGLx_3bYE"
+        );
+    }
+
+    #[test]
     fn a_bad_vapid_key_is_refused_up_front() {
         assert!(Vapid::new("not base64!", "mailto:a@b.c").is_err());
         assert!(Vapid::new(&B64.encode([0u8; 32]), "mailto:a@b.c").is_err(), "zero is not a valid scalar");
