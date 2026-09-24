@@ -2202,7 +2202,7 @@ mod tests {
 
     #[test]
     fn the_jester_player_may_choose_any_seat_including_their_own() {
-        // "[rules wording removed]" - any
+        // After a Jester its player picks who goes next, from any seat - and any
         // includes themselves. should_apply only checks that the chooser is
         // the current player; it does not, and must not, care which index
         // they picked - that legality lives in choose_next_player itself.

@@ -630,7 +630,8 @@ fn solo_player_with_a_jester_left_is_not_lost_yet() {
 
 #[test]
 fn a_player_who_can_neither_play_nor_yield_loses() {
-    /* Rules: the players lose if anyone [rules wording removed]. An empty-handed player can normally still yield - but not
+    /* The table loses when the current player has no legal play and cannot
+       yield. An empty-handed player can normally still yield - but not
        once everyone else already has. */
     let mut state = GameState::new(2);
     state.active_enemy = Some(Enemy::new(Card::new(Suit::Hearts, Rank::Jack, 940)));

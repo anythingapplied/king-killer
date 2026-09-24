@@ -1,8 +1,7 @@
 # King Killer
 
-A mobile-first web implementation of the co-operative card game
-[King Killer](rules.md). Rust rules engine, Rust server, React frontend, SQLite
-persistence.
+A mobile-first web implementation of King Killer, a co-operative card game.
+Rust rules engine, Rust server, React frontend, SQLite persistence.
 
 No accounts, no lobbies: you create a room, share the link, and whoever opens it
 takes a seat. Anyone arriving after the seats are full watches instead.
@@ -14,7 +13,6 @@ takes a seat. Anyone arriving after the seats are full watches instead.
 | `king-killer-core/` | The rules engine. Pure logic, no I/O, no networking. |
 | `king-killer-api/` | HTTP + WebSocket server, SQLite persistence, room membership. |
 | `frontend/` | React + Vite + Tailwind client. |
-| `rules.md` | The game's rules, as implemented. |
 | `scripts/` | Card art generation and a dev launcher. |
 
 The rules live in Rust specifically so they can be reused from OpenSpiel for

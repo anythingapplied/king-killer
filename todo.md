@@ -63,7 +63,8 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Retroactive Jester powers restricted to Spades** — Hearts and Diamonds
       are one-shot effects that already resolved, and Clubs is explicitly not
       retroactive.
-- [x] **Yield restriction**: no yielding once [rules wording removed].
+- [x] **Yield restriction**: no yielding when every other player yielded
+      on their most recent turn.
 - [x] **Loss check can't be skipped.** Every turn hand-off goes through
       `advance_turn`. A fully-shielded attack used to skip the discard step and
       with it the only loss check on that path, leaving a solo player with an

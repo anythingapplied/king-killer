@@ -358,7 +358,7 @@ pub struct GameState {
     /// client-side defeat animations. `None` until an enemy has been defeated.
     pub last_enemy_fate: Option<EnemyFate>,
     /// Yields taken in a row since the last card was played. A player may not
-    /// yield once [rules wording removed], which
+    /// yield when every other player yielded on their most recent turn, which
     /// would otherwise stall the table forever. `#[serde(default)]` lets
     /// pre-existing snapshots load.
     #[serde(default)]
@@ -526,8 +526,7 @@ impl GameState {
         }
         
         // Jester can be used in AwaitingPlay OR at start of AwaitingDiscard
-        // (Wait, rules say "[rules wording removed]" - 
-        // that means before any cards are discarded).
+        // A solo Jester is allowed before any discard has been chosen.
 
         self.solo_jesters -= 1;
         self.log(Some(self.current_player_index), LogKind::Jester, Vec::new());
@@ -611,7 +610,7 @@ impl GameState {
                back into the Tavern deck mid-fight. */
             self.played_cards.extend(played_cards);
 
-            /* Rules: "[rules wording removed]". Any player - including
+            /* After a Jester, its player picks who goes next. Any player - including
                themselves - so the choice is real at every table size, and at a
                two-player table it is "keep the turn or pass it". Never advance
                the turn automatically.
@@ -698,8 +697,8 @@ impl GameState {
              return Err("Cannot yield in solo play".to_string());
         }
 
-        /* Rules: [rules wording removed] already yielded on
-           their last turn - the table would never make progress. */
+        /* No yielding when every other player yielded on their most recent
+           turn - the table would never make progress. */
         if self.consecutive_yields + 1 >= self.players.len() {
             return Err("Cannot yield: every other player has already yielded".to_string());
         }
@@ -808,7 +807,8 @@ impl GameState {
 
     /// Ends the game if whoever's turn it now is cannot legally act.
     ///
-    /// Rules: the players lose if anyone [rules wording removed]. A solo player has no yield, so an empty hand with no Jester
+    /// The table loses when the current player has no legal play and cannot
+    /// yield. A solo player has no yield, so an empty hand with no Jester
     /// left is terminal. At a full table an empty-handed player can normally
     /// still yield - unless everyone else already yielded, which is the one
     /// case where they are genuinely stuck.
@@ -872,7 +872,7 @@ impl GameState {
         let total: u32 = cards.iter().map(|c| c.attack_value()).sum();
 
         if same_rank && total <= 10 && cards.len() >= 2 && cards.len() <= 4 {
-            // Only numbers can be in sets? Rules: "[rules wording removed]"
+            // Only number cards form sets.
             // Jacks/Queens/Kings are 10+, so they can't be in a set summing to <= 10 anyway.
             return matches!(first_rank, Rank::Number(_));
         }

@@ -74,7 +74,7 @@ const ActionFooter: React.FC<ActionFooterProps> = ({
                         </button>
                         {!isSolo && (
                             <button 
-                                // Yielding is illegal once [rules wording removed]; the server rejects it
+                                // No yielding when every other player yielded on their most recent turn; the server rejects it
                                 // silently, so don't offer it.
                                 disabled={!isMyTurn || selectedIndicesCount > 0 || !canYield} 
                                 onClick={onYieldClick} 

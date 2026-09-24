@@ -564,7 +564,7 @@ export const useGameLogic = () => {
   );
 
   /**
-   * Rules: a player may not yield once [rules wording removed]. The server enforces it too, but it rejects silently, so
+   * No yielding when every other player yielded on their most recent turn. The server enforces it too, but it rejects silently, so
    * the button has to know.
    */
   const canYield = useMemo(() => {

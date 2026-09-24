@@ -6,7 +6,6 @@ frontend/test-results
 frontend/screenshots
 .git
 *.log
-legacyrules
 scripts
 devenv.nix
 devenv.lock

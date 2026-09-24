@@ -1242,6 +1242,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "king-killer-api"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "futures",
+ "hkdf 0.13.0",
+ "king-killer-core",
+ "p256",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "king-killer-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,41 +1838,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4666a1a60d8412eab19d94f6d13dcc9cea0a5ef4fdf6a5db306537413c661b1b"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "king-killer-api"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "axum",
- "base64 0.23.1",
- "futures",
- "hkdf 0.13.0",
- "p256",
- "rand 0.10.3",
- "king-killer-core",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "king-killer-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
