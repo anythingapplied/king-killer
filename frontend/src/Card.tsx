@@ -38,8 +38,15 @@ const getCardFileName = (card: CardType): string => {
 
 const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, className, layoutId }) => {
     if (isEmpty) {
+        // An open hand slot. It used to be a 30%-opacity slate-800 border on
+        // a near-black board, which all but vanished; a dashed, lighter
+        // outline with a faint fill reads as "a card goes here" without
+        // being mistaken for a card.
         return (
-            <div className={`aspect-[5/7] border-2 border-slate-800/30 bg-slate-950/20 flex-shrink-0 ${className ?? ''}`} />
+            <div
+                data-testid="empty-slot"
+                className={`aspect-[5/7] border-2 border-dashed border-slate-500/60 bg-slate-700/20 flex-shrink-0 ${className ?? ''}`}
+            />
         );
     }
 
