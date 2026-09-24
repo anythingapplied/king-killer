@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../types';
 import Modal from './Modal';
+import { NO_AUTOFILL } from '../noAutofill';
 
 interface ChatProps {
     chat: ChatMessage[];
@@ -41,6 +42,7 @@ const Chat: React.FC<ChatProps> = ({ chat, myPlayerId, onSend, onClose }) => {
                 <div className="flex gap-2 px-4 py-3 border-t border-slate-700 flex-shrink-0">
                     <input
                         autoFocus
+                        {...NO_AUTOFILL}
                         value={draft}
                         maxLength={MAX_LEN}
                         onChange={(e) => setDraft(e.target.value)}

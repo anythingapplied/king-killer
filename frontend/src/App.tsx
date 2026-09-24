@@ -3,6 +3,7 @@ import { useGameLogic, type DefeatFlight } from './hooks/useGameLogic';
 import HUD from './components/HUD';
 import Arena from './components/Arena';
 import HandArea from './components/HandArea';
+import { NO_AUTOFILL } from './noAutofill';
 import ActionFooter from './components/ActionFooter';
 import GameLog from './components/GameLog';
 import Chat from './components/Chat';
@@ -70,9 +71,10 @@ const App: React.FC = () => {
                 </motion.h1>
                 <div className="bg-slate-800 p-5 sm:p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700">
                     <h2 className="text-lg sm:text-xl font-bold mb-4 sm:mb-6 text-slate-300">New Game</h2>
-                    <input 
-                        type="text" 
-                        placeholder="YOUR NAME" 
+                    <input
+                        type="text"
+                        {...NO_AUTOFILL}
+                        placeholder="YOUR NAME"
                         value={playerName}
                         onChange={(e) => setPlayerName(e.target.value)}
                         className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-3 px-4 text-center font-bold focus:ring-2 focus:ring-blue-500 outline-none t-body mb-4 sm:mb-6" 
@@ -89,9 +91,10 @@ const App: React.FC = () => {
                         <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-700"></div></div>
                         <div className="relative flex justify-center"><span className="t-label px-3 bg-slate-800 text-slate-500 font-bold uppercase tracking-widest">or join room</span></div>
                     </div>
-                    <input 
-                        type="text" 
-                        placeholder="PASTE GAME LINK" 
+                    <input
+                        type="text"
+                        {...NO_AUTOFILL}
+                        placeholder="PASTE GAME LINK"
                         className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-4 sm:py-5 px-4 text-center font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase text-base sm:text-lg" 
                         onKeyDown={(e) => { if (e.key === 'Enter') joinGame(e.currentTarget.value.trim()); }} 
                     />
