@@ -30,6 +30,8 @@
 //! mid-game is invisible. Chat and game state therefore have to survive in the
 //! database, not in memory.
 
+mod push;
+
 use axum::{
     extract::Query,
     extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
@@ -38,7 +40,7 @@ use axum::{
     Json, Router,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use king_killer_core::{Card, GameState, Rank};
+use king_killer_core::{Card, GameState, GameStatus, Rank};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::collections::{HashMap, HashSet};
@@ -56,6 +58,9 @@ struct AppState {
     broadcasts: Arc<RwLock<HashMap<String, broadcast::Sender<ServerMessage>>>>,
     last_activity: Arc<RwLock<Instant>>,
     db: SqlitePool,
+    /// Web Push sender; `None` when VAPID keys aren't configured, in which
+    /// case push is simply off. See `push.rs`.
+    push: Option<Arc<push::Vapid>>,
 }
 
 /// A person attached to a room. Seats below the current game's player count
@@ -189,6 +194,12 @@ struct Room {
     /// pick and the rotation starts from there.
     #[serde(default)]
     last_starter: Option<usize>,
+    /// Web Push subscriptions by member token - the token, not the seat, is
+    /// the person, so a subscription survives seat reshuffles. Persisted
+    /// (the server scales to zero between turns) but never sent to clients:
+    /// `RoomSnapshot` doesn't carry it.
+    #[serde(default)]
+    push_subs: HashMap<String, push::PushSubscription>,
 }
 
 impl Room {
@@ -624,6 +635,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     chat: Vec::new(),
                     live: HashMap::new(),
                     last_starter: None,
+                    push_subs: HashMap::new(),
                 },
             );
         } else {
@@ -658,6 +670,8 @@ fn api_router(state: AppState) -> Router {
         .route("/api/game", post(create_game))
         .route("/api/game/{id}", get(get_game))
         .route("/api/game/{id}/join", post(join_game_seat))
+        .route("/api/game/{id}/push", post(set_push_subscription))
+        .route("/api/push/key", get(push_key))
         .route("/api/ws/{id}", get(ws_handler))
         .layer(cors)
         .with_state(state)
@@ -695,7 +709,11 @@ async fn main() {
         broadcasts: Arc::new(RwLock::new(broadcasts)),
         last_activity: Arc::new(RwLock::new(Instant::now())),
         db: pool,
+        push: push::Vapid::from_env().map(Arc::new),
     };
+    if state.push.is_none() {
+        tracing::info!("VAPID keys not configured; turn push notifications are off");
+    }
 
     let idle_check_state = state.clone();
     tokio::spawn(async move {
@@ -837,6 +855,7 @@ async fn create_game(
         chat: Vec::new(),
         live: HashMap::new(),
         last_starter: Some(starter),
+        push_subs: HashMap::new(),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -911,6 +930,128 @@ async fn get_game(
             axum::http::StatusCode::NOT_FOUND,
             format!("No game with code {id}"),
         ))
+    }
+}
+
+#[derive(Serialize, Debug)]
+struct PushKeyResponse {
+    /// The VAPID public key, base64url - `applicationServerKey` for
+    /// `pushManager.subscribe`.
+    key: String,
+}
+
+/// The key browsers subscribe against, or 404 when push isn't configured (the
+/// client then stays with page-only notifications).
+async fn push_key(State(state): State<AppState>) -> Result<Json<PushKeyResponse>, ApiErrorResponse> {
+    match &state.push {
+        Some(vapid) => Ok(Json(PushKeyResponse { key: vapid.public_key.clone() })),
+        None => Err(api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "Push notifications are not configured on this server",
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct PushSubscribeRequest {
+    /// The seat token: proves which member is subscribing.
+    token: String,
+    /// The browser's subscription, or `null` to stop pushes.
+    subscription: Option<push::PushSubscription>,
+}
+
+/// Stores (or clears) the calling member's push subscription for this room.
+///
+/// A plain request rather than a socket `GameAction` on purpose: actions are
+/// recorded in `game_history` and broadcast to the table, and a subscription
+/// endpoint is a capability URL that belongs to neither.
+async fn set_push_subscription(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(payload): Json<PushSubscribeRequest>,
+) -> Result<axum::http::StatusCode, ApiErrorResponse> {
+    let room = {
+        let mut rooms = state.rooms.write().unwrap();
+        let room = rooms.get_mut(&id).ok_or_else(|| {
+            api_error(axum::http::StatusCode::NOT_FOUND, format!("No game with code {id}"))
+        })?;
+        if seat_for_token(room, Some(&payload.token)).is_none() {
+            return Err(api_error(
+                axum::http::StatusCode::FORBIDDEN,
+                "That token doesn't hold a seat in this room",
+            ));
+        }
+        match payload.subscription {
+            Some(sub) => {
+                push::validate(&sub).map_err(|e| api_error(axum::http::StatusCode::BAD_REQUEST, e))?;
+                room.push_subs.insert(payload.token, sub);
+            }
+            None => {
+                room.push_subs.remove(&payload.token);
+            }
+        }
+        room.clone()
+    };
+    persist_room(&state.db, &room).await;
+    touch(&state.last_activity);
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Who, if anyone, a just-applied action should push "your turn" to.
+///
+/// `before` is `(seed, current_player_index)` from just before the action, so
+/// both a turn passing and a new deal count as the turn arriving. Only a
+/// member with *no open connection* is pushed: a visible page, or a desktop tab
+/// in the background, still has its socket and is covered by the chime and the
+/// page's own notification. iOS closes a suspended page's socket, which is
+/// exactly the case push exists for - and pushing to a player who has the page
+/// open would risk iOS revoking the subscription, since every push must show a
+/// notification there.
+fn turn_push_target(before: (u64, usize), room: &Room) -> Option<(String, push::PushSubscription)> {
+    let game = &room.game;
+    if game.status != GameStatus::InProgress || game.players.len() < 2 {
+        return None; // solo hands the turn straight back; nothing to announce
+    }
+    if (game.seed, game.current_player_index) == before {
+        return None;
+    }
+    let member = room.members.iter().find(|m| m.seat == game.current_player_index)?;
+    if member.token.is_empty() || room.is_live(member) {
+        return None;
+    }
+    let sub = room.push_subs.get(&member.token)?;
+    Some((member.token.clone(), sub.clone()))
+}
+
+/// Sends the turn push, dropping the subscription if the push service says
+/// it's gone. Runs detached so a slow push service never holds up the table.
+async fn send_turn_push(state: AppState, vapid: Arc<push::Vapid>, room_id: String, token: String, sub: push::PushSubscription) {
+    let payload = serde_json::json!({
+        "title": "King Killer - it's your turn",
+        "body": format!("Room {room_id}: the table is waiting on you."),
+        // Same tag as the page-only notification, so the two never stack.
+        "tag": "king-killer-turn",
+        "url": format!("/?game={room_id}"),
+    })
+    .to_string();
+    match vapid.send(&sub, payload.as_bytes()).await {
+        push::Delivery::Sent => {}
+        push::Delivery::Gone => {
+            let room = {
+                let mut rooms = state.rooms.write().unwrap();
+                rooms.get_mut(&room_id).and_then(|room| {
+                    // Only if it wasn't replaced by a fresh subscription meanwhile.
+                    (room.push_subs.get(&token) == Some(&sub)).then(|| {
+                        room.push_subs.remove(&token);
+                        room.clone()
+                    })
+                })
+            };
+            if let Some(room) = room {
+                persist_room(&state.db, &room).await;
+            }
+        }
+        push::Delivery::Failed(reason) => tracing::warn!(room_id = %room_id, "turn push failed: {reason}"),
     }
 }
 
@@ -1176,7 +1317,7 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                 // between and the action would run as a seat that was
                 // checked against the old table. Authorization and dispatch
                 // both live in pure functions above, so this is only locking.
-                let (room, result) = {
+                let (room, result, before) = {
                     let mut rooms = state_recv.rooms.write().unwrap();
                     let Some(room) = rooms.get_mut(&id) else { continue };
                     let seat = seat_for_token(room, token.as_deref());
@@ -1189,8 +1330,11 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                         // disables.
                         continue;
                     }
+                    // Whose turn it was, so a turn arriving can be told apart
+                    // from one that didn't move (see turn_push_target).
+                    let before = (room.game.seed, room.game.current_player_index);
                     let result = apply_action(room, &action, seat);
-                    (Some(room.clone()), result)
+                    (Some(room.clone()), result, before)
                 };
 
                 if let Err(message) = result {
@@ -1214,6 +1358,11 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                         let _ = tx.send(ServerMessage::State(snapshot(&room)));
                     }
                     touch(&state_recv.last_activity);
+
+                    // The turn reached someone whose page isn't running: push.
+                    if let (Some(vapid), Some((token, sub))) = (state_recv.push.clone(), turn_push_target(before, &room)) {
+                        tokio::spawn(send_turn_push(state_recv.clone(), vapid, id.clone(), token, sub));
+                    }
                 }
             }
         }
@@ -1260,6 +1409,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         persist_room(&pool, &room).await;
@@ -1336,6 +1486,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         persist_room(&pool, &good).await;
 
@@ -1363,6 +1514,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -1394,6 +1546,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         // Shrink to two players. Seats are reassigned by host-then-recency, so
@@ -1424,6 +1577,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter,
+            push_subs: HashMap::new(),
         }
     }
 
@@ -1508,6 +1662,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: Some(2), // Carol went first
+            push_subs: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2); // Carol's own seat no longer exists
@@ -1525,6 +1680,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
@@ -1539,6 +1695,7 @@ mod tests {
             broadcasts: Arc::new(RwLock::new(HashMap::new())),
             last_activity: Arc::new(RwLock::new(Instant::now())),
             db,
+            push: None,
         }
     }
 
@@ -1620,6 +1777,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1649,6 +1807,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         room.push_chat(1, "said by Early");
         room.push_chat(2, "said by Newest");
@@ -1683,6 +1842,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1716,6 +1876,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         for _ in 0..4 {
             claim_seat(&mut room, None);
@@ -1738,6 +1899,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         })
         .await;
         let game = GameState::new(2);
@@ -1761,6 +1923,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -1795,6 +1958,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -1818,6 +1982,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         }
     }
 
@@ -1864,6 +2029,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         let mut issued = Vec::new();
         for name in ["a", "b", "c", "d"] {
@@ -1887,6 +2053,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         }
     }
 
@@ -1925,6 +2092,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
         assert!(is_player);
@@ -2071,6 +2239,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         room.push_chat(0, "hello");
         room
@@ -2256,6 +2425,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         }
     }
 
@@ -2636,6 +2806,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::from([("t0".to_string(), 1), ("t1".to_string(), 1), ("t3".to_string(), 1)]),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -2663,6 +2834,7 @@ mod tests {
             chat: Vec::new(),
             live: HashMap::new(),
             last_starter: None,
+            push_subs: HashMap::new(),
         };
         deal_new_game(&mut room, 2);
         let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
@@ -2793,5 +2965,198 @@ mod tests {
         let chat = seen["payload"]["chat"].as_array().unwrap();
         let last = chat.last().unwrap();
         assert_eq!((last["seat"].as_u64(), last["name"].as_str()), (Some(1), Some("Dana")));
+    }
+
+    // ---- Web Push: who is pushed, the endpoints, and the whole path ----
+
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+
+    fn test_vapid() -> Arc<push::Vapid> {
+        Arc::new(push::Vapid::new(&B64.encode(push::random_secret_key().to_bytes()), "mailto:ops@example.com").unwrap())
+    }
+
+    /// A 2-player room where the turn has just passed from Alice (seat 0) to
+    /// Bob (seat 1), who has a push subscription. `before` is the pre-action
+    /// (seed, current) - i.e. it was Alice's turn.
+    fn push_room() -> (Room, (u64, usize)) {
+        let mut room = Room {
+            id: "PUSHY".to_string(),
+            members: vec![
+                Member { seat: 0, name: "Alice".to_string(), host: true, token: "ta".to_string(), joined_seq: 0 },
+                Member { seat: 1, name: "Bob".to_string(), host: false, token: "tb".to_string(), joined_seq: 1 },
+            ],
+            game: GameState::new(2),
+            chat: Vec::new(),
+            live: HashMap::from([("ta".to_string(), 1)]),
+            last_starter: None,
+            push_subs: HashMap::new(),
+        };
+        let (_, _, sub) = push::tests::subscribed_browser("https://fcm.googleapis.com/fcm/send/bob");
+        room.push_subs.insert("tb".to_string(), sub);
+        room.game.current_player_index = 1;
+        let before = (room.game.seed, 0);
+        (room, before)
+    }
+
+    #[test]
+    fn the_turn_reaching_an_absent_subscriber_pushes_to_them() {
+        let (room, before) = push_room();
+        let (token, _) = turn_push_target(before, &room).expect("Bob should be pushed");
+        assert_eq!(token, "tb");
+    }
+
+    #[test]
+    fn nobody_is_pushed_when_they_have_the_page_open() {
+        // A live socket means the page is running: the chime and the page's
+        // own notification cover it, and iOS penalises pushes that don't show.
+        let (mut room, before) = push_room();
+        room.live.insert("tb".to_string(), 1);
+        assert!(turn_push_target(before, &room).is_none());
+    }
+
+    #[test]
+    fn nobody_is_pushed_when_the_turn_did_not_move() {
+        let (room, _) = push_room();
+        assert!(turn_push_target((room.game.seed, 1), &room).is_none(), "still Bob's turn: no new arrival");
+    }
+
+    #[test]
+    fn a_new_deal_counts_as_the_turn_arriving() {
+        // Same seat before and after, but a different deal.
+        let (room, _) = push_room();
+        assert!(turn_push_target((room.game.seed.wrapping_add(1), 1), &room).is_some());
+    }
+
+    #[test]
+    fn nobody_is_pushed_without_a_subscription_solo_or_once_the_game_is_over() {
+        let (mut room, before) = push_room();
+        room.push_subs.clear();
+        assert!(turn_push_target(before, &room).is_none(), "no subscription");
+
+        let (mut room, before) = push_room();
+        room.game.status = GameStatus::Lost("test".into());
+        assert!(turn_push_target(before, &room).is_none(), "game over");
+
+        let (mut room, _) = push_room();
+        room.game = GameState::new(1);
+        room.members.truncate(1);
+        room.push_subs.insert("ta".to_string(), room.push_subs["tb"].clone());
+        room.live.clear();
+        assert!(turn_push_target((room.game.seed.wrapping_add(1), 0), &room).is_none(), "solo");
+    }
+
+    #[tokio::test]
+    async fn http_push_key_is_404_until_configured() {
+        let mut state = test_state().await;
+        let (status, _) = http(&state, Request::get("/api/push/key").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        state.push = Some(test_vapid());
+        let (status, body) = http(&state, Request::get("/api/push/key").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["key"], state.push.as_ref().unwrap().public_key);
+    }
+
+    #[tokio::test]
+    async fn http_subscribing_needs_a_seat_token_and_a_real_push_service() {
+        let state = test_state().await;
+        let (id, alice_token, _) = two_seat_room(&state).await;
+        let uri = format!("/api/game/{id}/push");
+        let (_, _, good) = push::tests::subscribed_browser("https://fcm.googleapis.com/fcm/send/alice");
+        let request = |token: &str, sub: serde_json::Value| {
+            post_json(&uri, &serde_json::json!({ "token": token, "subscription": sub }).to_string())
+        };
+
+        let (status, _) = http(&state, request("not-a-token", serde_json::to_value(&good).unwrap())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "no seat, no subscription");
+
+        let mut aimed_inside = good.clone();
+        aimed_inside.endpoint = "https://127.0.0.1/admin".into();
+        let (status, body) = http(&state, request(&alice_token, serde_json::to_value(&aimed_inside).unwrap())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["message"].as_str().unwrap().contains("not a known push service"));
+
+        let (status, _) = http(&state, request(&alice_token, serde_json::to_value(&good).unwrap())).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(state.rooms.read().unwrap()[&id].push_subs.get(&alice_token), Some(&good));
+        let (stored,): (String,) = sqlx::query_as("SELECT state_json FROM games WHERE id = ?1").bind(&id).fetch_one(&state.db).await.unwrap();
+        assert!(stored.contains("fcm/send/alice"), "persisted, so it survives the idle shutdown");
+
+        let (status, _) = http(&state, request(&alice_token, serde_json::Value::Null)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(state.rooms.read().unwrap()[&id].push_subs.is_empty(), "null unsubscribes");
+    }
+
+    #[tokio::test]
+    async fn the_snapshot_never_carries_a_push_subscription() {
+        let (room, _) = push_room();
+        let json = serde_json::to_string(&redact_for(&snapshot(&room), None)).unwrap();
+        assert!(!json.contains("fcm.googleapis.com"), "subscriptions are capability URLs; clients never see them");
+    }
+
+    #[tokio::test]
+    async fn ws_the_turn_reaching_a_player_whose_page_is_closed_sends_them_a_push() {
+        // End to end: Alice is connected, Bob only subscribed. Alice re-deals
+        // with the rotation set so Bob starts - the turn reaches Bob with no
+        // page open, so the (fake) push service receives an encrypted push
+        // that Bob's browser key decrypts.
+        let service = push::tests::fake_push_service(201).await;
+        let mut state = test_state().await;
+        state.push = Some(test_vapid());
+        let (id, alice_token, bob_token) = two_seat_room(&state).await;
+        let (bob_secret, bob_auth, bob_sub) = push::tests::subscribed_browser(&service.endpoint);
+        {
+            let mut rooms = state.rooms.write().unwrap();
+            let room = rooms.get_mut(&id).unwrap();
+            // Inserted directly: the validator would (rightly) refuse a
+            // 127.0.0.1 endpoint, which is all a test push service can be.
+            room.push_subs.insert(bob_token.clone(), bob_sub);
+            room.last_starter = Some(0); // next deal starts with seat 1 - Bob
+        }
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        recv(&mut alice).await;
+
+        send(&mut alice, serde_json::json!({ "type": "NewGame", "payload": { "num_players": 2 } })).await;
+        let msg = recv(&mut alice).await;
+        assert_eq!(msg["payload"]["game"]["current_player_index"], 1, "Bob starts the new deal");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while service.received.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "no push arrived");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (_, body) = service.received.lock().unwrap()[0].clone();
+        let payload: serde_json::Value = serde_json::from_slice(&push::tests::open(&body, &bob_secret, &bob_auth)).unwrap();
+        assert_eq!(payload["title"], "King Killer - it's your turn");
+        assert_eq!(payload["url"], format!("/?game={id}"));
+        assert_eq!(payload["tag"], "king-killer-turn");
+    }
+
+    #[tokio::test]
+    async fn ws_a_subscription_the_push_service_dropped_is_forgotten() {
+        let service = push::tests::fake_push_service(410).await;
+        let mut state = test_state().await;
+        state.push = Some(test_vapid());
+        let (id, alice_token, bob_token) = two_seat_room(&state).await;
+        let (_, _, bob_sub) = push::tests::subscribed_browser(&service.endpoint);
+        {
+            let mut rooms = state.rooms.write().unwrap();
+            let room = rooms.get_mut(&id).unwrap();
+            room.push_subs.insert(bob_token.clone(), bob_sub);
+            room.last_starter = Some(0);
+        }
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        recv(&mut alice).await;
+        send(&mut alice, serde_json::json!({ "type": "NewGame", "payload": { "num_players": 2 } })).await;
+        recv(&mut alice).await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.rooms.read().unwrap()[&id].push_subs.contains_key(&bob_token) {
+            assert!(Instant::now() < deadline, "the dead subscription was kept");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
