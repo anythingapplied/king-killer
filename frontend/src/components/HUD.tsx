@@ -34,6 +34,9 @@ interface HUDProps {
     turnNotify: boolean;
     notifyPermission: NotificationPermission | 'unsupported';
     onToggleTurnNotify: () => void;
+    /** The browser is blocking audio until the page is interacted with. */
+    soundBlocked: boolean;
+    onEnableSound: () => void;
 }
 
 /** Solo play always starts with two Jesters, so the row always shows two slots. */
@@ -42,7 +45,7 @@ const SOLO_JESTER_SLOTS = 2;
 const HUD: React.FC<HUDProps> = ({ 
     myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat,
     onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename,
-    turnNotify, notifyPermission, onToggleTurnNotify,
+    turnNotify, notifyPermission, onToggleTurnNotify, soundBlocked, onEnableSound,
 }) => {
     const isSolo = gameState.players.length === 1;
     const me = isSpectator || myPlayerId === null ? undefined : gameState.players[myPlayerId];
@@ -245,6 +248,29 @@ const HUD: React.FC<HUDProps> = ({
                         );
                     })}
                 </div>
+            )}
+
+            {/* The browser won't play the turn chime until this page has been
+                interacted with since it loaded (a reload, a reopened link, a
+                tab the browser discarded) - and says nothing about it. Tapping
+                this is that interaction, and rings once to confirm. */}
+            {soundBlocked && (
+                <button
+                    // pointerdown, not click: the window-level unlock also
+                    // runs on pointerdown and hides this hint the moment audio
+                    // wakes, so by the time `click` fires the button is gone
+                    // and the confirming chime never rang. React's handler here
+                    // runs before the window listener. Keyboard activation
+                    // (Enter/Space) has no pointerdown - it arrives as a click
+                    // with detail 0 - so that path still works, without a
+                    // pointer tap ringing twice.
+                    onPointerDown={onEnableSound}
+                    onClick={(e) => { if (e.detail === 0) onEnableSound(); }}
+                    data-testid="sound-hint"
+                    className="w-full mt-1.5 pt-1.5 border-t border-slate-700/30 t-micro font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 text-center"
+                >
+                    🔇 Tap here to turn on the turn sound
+                </button>
             )}
         </div>
     );

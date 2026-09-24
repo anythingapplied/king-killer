@@ -38,11 +38,33 @@ export const setMuted = (value: boolean): void => {
     } catch { /* not persisted this session */ }
 };
 
+// Whether audio can actually play right now, for the "tap to turn on sound"
+// hint. A page that hasn't been clicked since it loaded (a reload, a reopened
+// link, a tab the browser discarded and brought back) can't start audio, and
+// nothing the page does changes that until the player interacts - so the UI
+// has to say so rather than chime into silence.
+const readyListeners = new Set<(ready: boolean) => void>();
+const notifyReady = () => {
+    const ready = isAudioReady();
+    readyListeners.forEach((listener) => listener(ready));
+};
+
+export const isAudioReady = (): boolean => context?.state === 'running';
+
+/** Calls `listener` whenever audio becomes playable or stops being so. */
+export const onAudioReadyChange = (listener: (ready: boolean) => void): (() => void) => {
+    readyListeners.add(listener);
+    return () => { readyListeners.delete(listener); };
+};
+
 const getContext = (): AudioContext | null => {
     if (typeof window === 'undefined' || !('AudioContext' in window)) return null;
     if (!context) {
         try {
             context = new AudioContext();
+            // The browser or OS can suspend it later (a Linux audio device
+            // change, iOS interrupting for a call); the hint follows along.
+            context.onstatechange = notifyReady;
         } catch {
             return null;
         }
@@ -53,26 +75,26 @@ const getContext = (): AudioContext | null => {
 const UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchend'] as const;
 
 /**
- * Arms audio on the first interaction with the page, so later chimes (which
- * fire from state updates) actually sound. Returns a teardown function.
+ * Arms audio on interaction with the page, so later chimes (which fire from
+ * state updates, never a gesture) actually sound. Stays armed rather than
+ * removing itself after the first gesture: if the context is suspended later,
+ * the next tap brings it back. Returns a teardown function.
  */
 export const installAudioUnlock = (): (() => void) => {
     if (typeof window === 'undefined') return () => {};
 
-    const teardown = () => {
-        for (const event of UNLOCK_EVENTS) window.removeEventListener(event, unlock);
-    };
-
     const unlock = () => {
-        teardown();
         const ac = getContext();
-        if (ac && ac.state !== 'running') void ac.resume().catch(() => {});
+        if (ac && ac.state !== 'running') void ac.resume().then(notifyReady, () => {});
+        else notifyReady();
     };
 
     for (const event of UNLOCK_EVENTS) {
         window.addEventListener(event, unlock, { passive: true });
     }
-    return teardown;
+    return () => {
+        for (const event of UNLOCK_EVENTS) window.removeEventListener(event, unlock);
+    };
 };
 
 const ring = (ac: AudioContext) => {
