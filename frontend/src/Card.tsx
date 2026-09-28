@@ -38,8 +38,15 @@ const getCardFileName = (card: CardType): string => {
 
 const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, className, layoutId }) => {
     if (isEmpty) {
+        // An open hand slot. It used to be a 30%-opacity slate-800 border on
+        // a near-black board, which all but vanished; a dashed, lighter
+        // outline with a faint fill reads as "a card goes here" without
+        // being mistaken for a card.
         return (
-            <div className={`aspect-[5/7] border-2 border-slate-800/30 bg-slate-950/20 flex-shrink-0 ${className ?? ''}`} />
+            <div
+                data-testid="empty-slot"
+                className={`aspect-[5/7] border-2 border-dashed border-slate-500/60 bg-slate-700/20 flex-shrink-0 ${className ?? ''}`}
+            />
         );
     }
 
@@ -52,7 +59,9 @@ const Card: React.FC<CardProps> = ({ card, isBack, isEmpty, onClick, selected, c
             onClick={onClick}
             // Lift is a share of the card's own height rather than a fixed 24px,
             // so selection reads the same on a 60px phone card and a 120px
-            // desktop one instead of nearly clearing the small card.
+            // desktop one instead of nearly clearing the small card. The hand
+            // leaves room for it above the row (.hand-status in index.css) -
+            // change the two together.
             animate={{ 
                 y: selected ? '-16%' : 0,
                 scale: 1,

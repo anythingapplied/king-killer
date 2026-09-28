@@ -8,9 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Discarded and Last Play side by side on wide screens.** They stack
-      vertically in the narrow side columns; with room to spare they should
-      sit horizontally.
 - [ ] **Chat and the game log shouldn't cover the board.** Both open as
       full-screen modals. On a big enough screen they should be panels you
       can have open together while still playing.
@@ -29,9 +26,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
         if the replay rules change.
       - Decide who may undo (presumably only the player who moved, before
         the next player acts) and show it to the table.
-- [ ] **The "N left to discard" count is sometimes hidden** behind raised
-      (selected) cards.
-- [ ] **Make empty hand slots more visible.**
 - [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
       Nothing host-specific was found; the silent case was a page that hadn't
       been interacted with since it loaded, which now shows a "tap to turn on
@@ -226,6 +220,14 @@ open are now closed, and a couple that read as closed turned out to be partial.
       snapshots, and dropped when the push service reports them gone. The app
       has a web manifest and icons so it can be added to the Home Screen, and
       iOS Safari players see a tip explaining that's how to get alerts.
+- [x] **Empty hand slots are visible**: a dashed, lighter outline with a faint
+      fill instead of a 30%-opacity border that vanished on the dark board.
+- [x] **Raised cards no longer hide the discard count.** A selected card lifts
+      16% of its height; on wide screens that pushed it over the status pill.
+      `.hand-status` reserves the largest possible lift below the pill.
+- [x] **Discarded and Last Play in a row on wide screens.** From 1024px both
+      side columns are 240px (equal, so the enemy stays centred) and their card
+      rows don't wrap; four cards fit on one line.
 - [x] **Text fields don't trigger password managers.** A lone name box read
       as a username field. Every input spreads `NO_AUTOFILL`
       (`autocomplete="off"` plus the 1Password, LastPass, Bitwarden and
