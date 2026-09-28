@@ -8,9 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Chat and the game log shouldn't cover the board.** Both open as
-      full-screen modals. On a big enough screen they should be panels you
-      can have open together while still playing.
 - [ ] **Undo for moves that didn't reveal anything.** Decided: keep a
       snapshot of the state from before each move and restore it, rather
       than trying to reverse the move. That makes a Hearts play undoable
@@ -228,6 +225,13 @@ open are now closed, and a couple that read as closed turned out to be partial.
 - [x] **Discarded and Last Play in a row on wide screens.** From 1024px both
       side columns are 240px (equal, so the enemy stays centred) and their card
       rows don't wrap; four cards fit on one line.
+- [x] **Chat and the game log dock beside the board on wide screens.** From
+      1280px they open in a column to the right of the board instead of
+      covering it, both can be open at once (log above chat), and the game
+      stays playable. The 📜/💬 buttons toggle and show when a panel is open.
+      Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
+      the docked panels clear the board, a card can still be selected, and
+      chat sends from the docked panel.
 - [x] **Text fields don't trigger password managers.** A lone name box read
       as a username field. Every input spreads `NO_AUTOFILL`
       (`autocomplete="off"` plus the 1Password, LastPass, Bitwarden and

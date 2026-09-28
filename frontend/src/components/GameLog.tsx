@@ -6,6 +6,8 @@ import Modal from './Modal';
 interface GameLogProps {
     gameState: GameState;
     onClose: () => void;
+    /** Beside the board rather than over it; see Modal. */
+    docked?: boolean;
 }
 
 /** Verb and colour for each kind of entry. */
@@ -18,13 +20,13 @@ const STYLES: Record<LogEntry['kind'], { verb: string; tone: string }> = {
     EnemyRevealed: { verb: 'Enemy revealed', tone: 'text-slate-400' },
 };
 
-const GameLog: React.FC<GameLogProps> = ({ gameState, onClose }) => {
+const GameLog: React.FC<GameLogProps> = ({ gameState, onClose, docked }) => {
     const log = gameState.game_log ?? [];
     const name = (i: number | null) =>
         i === null ? null : gameState.players[i]?.name || `Player ${i + 1}`;
 
     return (
-        <Modal title="Game Log" onClose={onClose} testId="game-log">
+        <Modal title="Game Log" onClose={onClose} testId="game-log" docked={docked}>
             {log.length === 0 ? (
                 <p className="t-label text-slate-500 text-center py-6">Nothing has happened yet.</p>
             ) : (

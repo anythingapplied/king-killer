@@ -9,6 +9,8 @@ interface ChatProps {
     myPlayerId: number | null;
     onSend: (text: string) => void;
     onClose: () => void;
+    /** Beside the board rather than over it; see Modal. */
+    docked?: boolean;
 }
 
 /** Server caps messages at 300 chars; mirror it so the limit is visible. */
@@ -17,13 +19,15 @@ const MAX_LEN = 300;
 const time = (at: number) =>
     new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
-const Chat: React.FC<ChatProps> = ({ chat, myPlayerId, onSend, onClose }) => {
+const Chat: React.FC<ChatProps> = ({ chat, myPlayerId, onSend, onClose, docked }) => {
     const [draft, setDraft] = useState('');
     const endRef = useRef<HTMLDivElement>(null);
 
-    // Stick to the newest message as it arrives.
+    // Stick to the newest message as it arrives. `nearest` scrolls only the
+    // message list: `end` also scrolls every scrollable ancestor, which for a
+    // docked panel means the page itself.
     useEffect(() => {
-        endRef.current?.scrollIntoView({ block: 'end' });
+        endRef.current?.scrollIntoView({ block: 'nearest' });
     }, [chat.length]);
 
     const submit = () => {
@@ -38,6 +42,7 @@ const Chat: React.FC<ChatProps> = ({ chat, myPlayerId, onSend, onClose }) => {
             title="Chat"
             onClose={onClose}
             testId="chat-panel"
+            docked={docked}
             footer={
                 <div className="flex gap-2 px-4 py-3 border-t border-slate-700 flex-shrink-0">
                     <input

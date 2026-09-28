@@ -9,6 +9,7 @@ import GameLog from './components/GameLog';
 import Chat from './components/Chat';
 import ActionErrorToast from './components/ActionErrorToast';
 import { canRenderBoard } from './seatState';
+import { useMediaQuery } from './hooks/useMediaQuery';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -34,6 +35,13 @@ const FlightOverlay: React.FC<{ flight: DefeatFlight; onDone: () => void }> = ({
     );
 };
 
+/**
+ * Wide enough to give the log and chat a column of their own beside the board
+ * (still leaving the board ~960px at the threshold) instead of covering it.
+ * Below this they open as full-screen overlays, one at a time.
+ */
+const DOCK_PANELS = '(min-width: 1280px)';
+
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
@@ -46,6 +54,7 @@ const App: React.FC = () => {
     const [showChat, setShowChat] = useState(false);
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
     const [showNewGame, setShowNewGame] = useState(false);
+    const docked = useMediaQuery(DOCK_PANELS);
 
     useEffect(() => {
         if (playerName) localStorage.setItem('kingkiller_player_name', playerName);
@@ -120,8 +129,23 @@ const App: React.FC = () => {
 
     const isDiscarding = damageNeeded > 0;
 
+    const logPanel = <GameLog key="log" docked={docked} gameState={localGameState} onClose={() => setShowLog(false)} />;
+    const chatPanel = (
+        <Chat
+            key="chat"
+            docked={docked}
+            chat={chat}
+            myPlayerId={myPlayerId}
+            onSend={sendChat}
+            onClose={() => setShowChat(false)}
+        />
+    );
+
     return (
-        <div className="board-shell bg-slate-950 text-slate-100 grid grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden max-w-6xl mx-auto font-sans">
+        // The board keeps its 6xl cap and centring; on wide screens the open
+        // log/chat panels take a column to its right instead of covering it.
+        <div className="board-shell bg-slate-950 text-slate-100 flex overflow-hidden font-sans">
+        <div className="h-full flex-1 min-w-0 grid grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden max-w-6xl mx-auto">
             {/* HUD Row */}
             <HUD 
                 gameId={gameId}
@@ -137,8 +161,10 @@ const App: React.FC = () => {
                 isHost={isHost}
                 onMenuClick={() => exitToMenu()}
                 onToggleMute={toggleMute}
-                onLogClick={() => setShowLog(true)}
-                onChatClick={() => setShowChat(true)}
+                onLogClick={() => setShowLog(v => !v)}
+                onChatClick={() => setShowChat(v => !v)}
+                logOpen={showLog}
+                chatOpen={showChat}
                 unreadChat={unreadChat}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
@@ -218,19 +244,14 @@ const App: React.FC = () => {
                 <FlightOverlay flight={defeatFlight} onDone={() => finishDefeatFlight(defeatFlight.id)} />
             )}
 
+            {/* Narrow screens: full-screen overlays. Docked ones render
+                beside the board, below. */}
             <AnimatePresence>
-                {showLog && <GameLog gameState={localGameState} onClose={() => setShowLog(false)} />}
+                {!docked && showLog && logPanel}
             </AnimatePresence>
 
             <AnimatePresence>
-                {showChat && (
-                    <Chat
-                        chat={chat}
-                        myPlayerId={myPlayerId}
-                        onSend={sendChat}
-                        onClose={() => setShowChat(false)}
-                    />
-                )}
+                {!docked && showChat && chatPanel}
             </AnimatePresence>
 
             {/* Global Overlays */}
@@ -300,6 +321,16 @@ const App: React.FC = () => {
                 >
                     Show Result
                 </motion.button>
+            )}
+        </div>
+
+            {/* Docked panels share the column's height, log above chat so the
+                chat box sits at the bottom where a composer usually is. */}
+            {docked && (showLog || showChat) && (
+                <aside data-testid="side-panels" className="w-80 flex-shrink-0 h-full flex flex-col gap-2 p-2 pl-0">
+                    <AnimatePresence>{showLog && logPanel}</AnimatePresence>
+                    <AnimatePresence>{showChat && chatPanel}</AnimatePresence>
+                </aside>
             )}
         </div>
     );
