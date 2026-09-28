@@ -21,6 +21,9 @@ interface HUDProps {
     onToggleMute: () => void;
     onLogClick: () => void;
     onChatClick: () => void;
+    /** Which panels are open, so their toggles can show it. */
+    logOpen: boolean;
+    chatOpen: boolean;
     unreadChat: number;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
@@ -46,7 +49,7 @@ interface HUDProps {
 const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat,
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat, logOpen, chatOpen,
     onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename,
     turnNotify, notifyPermission, onToggleTurnNotify, soundBlocked, onEnableSound, homeScreenTip, onCloseHomeScreenTip,
 }) => {
@@ -99,8 +102,10 @@ const HUD: React.FC<HUDProps> = ({
                     {isHost && (
                         <button onClick={onNewGameClick} className="t-micro bg-amber-700 font-black px-2 sm:px-3 py-1 rounded-full border border-amber-600 shadow uppercase hover:bg-amber-600" title="Start a new game in this room">New</button>
                     )}
-                    <button onClick={onLogClick} title="Show the game log" aria-label="Show the game log" data-testid="log-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none">📜</button>
-                    <button onClick={onChatClick} title="Open chat" aria-label={unreadChat > 0 ? `Open chat, ${unreadChat} unread` : 'Open chat'} data-testid="chat-toggle" className="t-micro bg-slate-700 font-black px-2 py-1 rounded-full border border-slate-600 shadow hover:bg-slate-600 leading-none relative">
+                    {/* On wide screens the panels dock beside the board and stay
+                        open while you play, so these toggle, and show when on. */}
+                    <button onClick={onLogClick} title={logOpen ? 'Hide the game log' : 'Show the game log'} aria-label="Game log" aria-pressed={logOpen} data-testid="log-toggle" className={`t-micro font-black px-2 py-1 rounded-full border shadow leading-none ${logOpen ? 'bg-blue-700 border-blue-500 hover:bg-blue-600' : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>📜</button>
+                    <button onClick={onChatClick} title={chatOpen ? 'Hide chat' : 'Open chat'} aria-label={unreadChat > 0 ? `Chat, ${unreadChat} unread` : 'Chat'} aria-pressed={chatOpen} data-testid="chat-toggle" className={`t-micro font-black px-2 py-1 rounded-full border shadow leading-none relative ${chatOpen ? 'bg-blue-700 border-blue-500 hover:bg-blue-600' : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}`}>
                         💬
                         {unreadChat > 0 && (
                             <span className="absolute -top-1 -right-1 bg-blue-500 text-white rounded-full min-w-4 h-4 px-1 flex items-center justify-center t-micro font-black border border-slate-900">
