@@ -11,9 +11,11 @@ interface ArenaProps {
     isDiscarding: boolean;
     /** The play that just defeated the enemy, while the board holds on it. */
     killingBlow?: KillingBlow | null;
+    /** A short announcement pinned to the top of the board, e.g. an undo. */
+    banner?: React.ReactNode;
 }
 
-const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding, killingBlow }) => {
+const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning, isDiscarding, killingBlow, banner }) => {
     // Only show warning if not in discard phase
     const showWarning = isImmuneWarning && !isDiscarding;
 
@@ -66,6 +68,11 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
 
     return (
         <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
+            {/* Absolute, so it never pushes the board around; below the HUD
+                whatever the HUD's height. */}
+            <div className="absolute top-1 left-1/2 -translate-x-1/2 z-[60] pointer-events-none">
+                <AnimatePresence>{banner}</AnimatePresence>
+            </div>
             {/* Left: In Play. Kept as a flex sibling (not an overlay) at every
                 width so it can never cover the board; it just gets narrower.
                 On a wide screen both side columns widen (lg:w-60, the same on

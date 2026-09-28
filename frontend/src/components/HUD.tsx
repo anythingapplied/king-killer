@@ -24,6 +24,9 @@ interface HUDProps {
     /** Which panels are open, so their toggles can show it. */
     logOpen: boolean;
     chatOpen: boolean;
+    /** This player may take their last move back. */
+    canUndo: boolean;
+    onUndoClick: () => void;
     unreadChat: number;
     onCopyIdClick: () => void;
     onSoloJesterClick: () => void;
@@ -49,7 +52,7 @@ interface HUDProps {
 const SOLO_JESTER_SLOTS = 2;
 
 const HUD: React.FC<HUDProps> = ({ 
-    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat, logOpen, chatOpen,
+    myPlayerId, gameState, roster, isSpectator, copySuccess, activeEffects, reconnecting, currentTierEnemies, muted, isHost, unreadChat, logOpen, chatOpen, canUndo, onUndoClick,
     onMenuClick, onToggleMute, onLogClick, onChatClick, onCopyIdClick, onSoloJesterClick, onNewGameClick, onRename,
     turnNotify, notifyPermission, onToggleTurnNotify, soundBlocked, onEnableSound, homeScreenTip, onCloseHomeScreenTip,
 }) => {
@@ -113,6 +116,12 @@ const HUD: React.FC<HUDProps> = ({
                             </span>
                         )}
                     </button>
+                    {/* Only while the server says this player's last move can be
+                        taken back: it revealed nothing, and nobody has acted
+                        since. */}
+                    {canUndo && (
+                        <button onClick={onUndoClick} title="Take back your last move" aria-label="Undo your last move" data-testid="undo-button" className="t-micro bg-slate-600 font-black px-2 sm:px-3 py-1 rounded-full border border-slate-400 shadow uppercase hover:bg-slate-500 leading-none">↶ Undo</button>
+                    )}
                     {/* Solo never chimes (the turn comes straight back), so the
                         control would be dead weight on the tightest layout. */}
                     {!isSolo && (

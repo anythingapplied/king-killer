@@ -32,7 +32,7 @@ export interface Enemy {
     is_jester_active: boolean;
 }
 
-export type LogKind = 'Played' | 'Yielded' | 'Discarded' | 'Jester' | 'EnemyDefeated' | 'EnemyRevealed';
+export type LogKind = 'Played' | 'Yielded' | 'Discarded' | 'Jester' | 'EnemyDefeated' | 'EnemyRevealed' | 'Undone';
 
 /** One event in the running game log. `player` is null for table events. */
 export interface LogEntry {
@@ -86,6 +86,9 @@ export interface RoomSnapshot {
     you?: number | null;
     /** Optional so a snapshot from a server without chat still type-checks. */
     chat?: ChatMessage[];
+    /** The seat that may take its last move back right now, if any. Sent to
+     *  everyone so the table can see an undo is possible. */
+    undo_seat?: number | null;
 }
 
 export type TurnPhase = 
@@ -141,4 +144,6 @@ export type GameAction =
     | { type: 'SetName', payload: { seat: number, name: string } }
     // No seat: the server attributes the message to the socket's own
     // authenticated seat, so a client can't post as anyone else.
-    | { type: 'SendChat', payload: { text: string } };
+    | { type: 'SendChat', payload: { text: string } }
+    // Takes back the sender's last move; the server checks it's theirs to undo.
+    | { type: 'Undo' };

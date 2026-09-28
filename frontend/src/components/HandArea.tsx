@@ -24,8 +24,11 @@ const DRAW_SPRING = { type: 'spring', stiffness: 260, damping: 30 } as const;
 const DrawnCardSlot = React.forwardRef<HTMLDivElement, {
     cardId: number;
     handMounted: React.RefObject<boolean>;
+    /** The card is coming back from an undo, not being drawn. Only read when
+     *  the slot mounts, which is the render that brought the card in. */
+    returning: boolean;
     children: React.ReactNode;
-}>(({ cardId, handMounted, children }, forwardedRef) => {
+}>(({ cardId, handMounted, returning, children }, forwardedRef) => {
     const slotRef = useRef<HTMLDivElement | null>(null);
     const cardRef = useRef<HTMLDivElement | null>(null);
     const x = useMotionValue(0);
@@ -46,8 +49,9 @@ const DrawnCardSlot = React.forwardRef<HTMLDivElement, {
         const h = cardRef.current.offsetHeight;
         const slot = { cx: outer.left + w / 2, cy: outer.bottom - h / 2, width: w };
         const tavern = document.querySelector('[data-testid="tavern-slot"]')?.getBoundingClientRect();
-        if (!tavern || slot.width === 0) {
-            // No deck on screen to fly from: a plain fade-in is still better
+        if (!tavern || slot.width === 0 || returning) {
+            // No deck on screen to fly from, or the card isn't from the deck
+            // at all (an undo put it back): a plain fade-in is still better
             // than a card that pops into place.
             opacity.jump(0);
             const fade = animate(opacity, 1, { duration: 0.25 });
@@ -114,12 +118,15 @@ interface HandAreaProps {
     currentPlayerIndex: number;
     discardRemaining: number;
     playerNames: string[];
+    /** This hand is the result of an undo, so any card that appears is being
+     *  handed back rather than drawn. */
+    cardsReturning: boolean;
 }
 
 const HandArea: React.FC<HandAreaProps> = ({
     sortedHand, maxHandSize, isMyTurn, selectedIndices,
     damageNeeded, currentDiscardValue, phase, enemySuit, isJesterActive,
-    onCardClick, actualHand, currentPlayerIndex, discardRemaining, playerNames
+    onCardClick, actualHand, currentPlayerIndex, discardRemaining, playerNames, cardsReturning
 }) => {
     // Flipped after the first render's child layout effects have run, so only
     // cards that arrive later fly in from the deck (see DrawnCardSlot).
@@ -174,6 +181,7 @@ const HandArea: React.FC<HandAreaProps> = ({
                                     key={item.card.id}
                                     cardId={item.card.id}
                                     handMounted={handMounted}
+                                    returning={cardsReturning}
                                 >
                                     <Card
                                         card={item.card}

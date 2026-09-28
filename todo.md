@@ -8,21 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Undo for moves that didn't reveal anything.** Decided: keep a
-      snapshot of the state from before each move and restore it, rather
-      than trying to reverse the move. That makes a Hearts play undoable
-      even though it shuffles the discard pile into the Tavern - the new
-      order is never shown to anyone, so nothing is learned. A move that
-      *reveals* something must stay final: drawing cards (Diamonds, a
-      refill), a new enemy coming up, or anything else that puts hidden
-      cards face up. Notes for whoever builds it:
-      - The snapshot has to include the RNG state, or undoing and replaying
-        the same Hearts play would shuffle differently from the first time.
-      - `game_history` must record the undo (e.g. an `Undo` action) so
-        stored games still replay to the same result; bump `RULES_VERSION`
-        if the replay rules change.
-      - Decide who may undo (presumably only the player who moved, before
-        the next player acts) and show it to the table.
 - [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
       Nothing host-specific was found; the silent case was a page that hadn't
       been interacted with since it loaded, which now shows a "tap to turn on
@@ -93,6 +78,18 @@ open are now closed, and a couple that read as closed turned out to be partial.
       capped at 200 entries).
 - [x] **A yield is recorded as a play**, so the board shows "Yield" instead of
       leaving the previous player's cards up.
+- [x] **Undo for moves that revealed nothing.** The server keeps the whole
+      state from before each such move (up to 5, RNG included) and an `Undo`
+      action restores it, so a Hearts heal can be taken back and replaying it
+      shuffles the same way. Draws (Diamonds, a solo Jester refill), a new
+      enemy and the game ending are final and clear the stack
+      (`GameState::is_undoable_from`). Only the player who moved may undo,
+      until the next player acts - including a discard after the turn has
+      passed on. The table sees a "took back a move" notice and log entry,
+      and `game_history` records an `undo` row; `RULES_VERSION` is unchanged
+      because no existing history replays differently. The discard pile is
+      now sent as a count only, so a heal-then-undo can't show which cards
+      went under the Tavern.
 - [x] `RULES_VERSION` at **4**; bump it for any rules or RNG change or stored
       histories replay differently.
 

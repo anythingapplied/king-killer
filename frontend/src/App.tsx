@@ -10,6 +10,7 @@ import Chat from './components/Chat';
 import ActionErrorToast from './components/ActionErrorToast';
 import { canRenderBoard } from './seatState';
 import { useMediaQuery } from './hooks/useMediaQuery';
+import { undoneBy } from './undo';
 import Card from './Card';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -45,7 +46,7 @@ const DOCK_PANELS = '(min-width: 1280px)';
 const App: React.FC = () => {
     const {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
-        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, soundBlocked, enableSound, homeScreenTip, closeHomeScreenTip, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError,
+        defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, soundBlocked, enableSound, homeScreenTip, closeHomeScreenTip, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError, canUndo, undoLastMove, undoNotice,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
@@ -165,6 +166,8 @@ const App: React.FC = () => {
                 onChatClick={() => setShowChat(v => !v)}
                 logOpen={showLog}
                 chatOpen={showChat}
+                canUndo={canUndo}
+                onUndoClick={undoLastMove}
                 unreadChat={unreadChat}
                 onCopyIdClick={copyId}
                 onSoloJesterClick={() => sendAction({ type: 'UseSoloJester' })}
@@ -189,6 +192,20 @@ const App: React.FC = () => {
                 // takes off for the pile the preview would be left floating
                 // over an empty spot.
                 killingBlow={defeatFlight?.flying ? null : killingBlow}
+                // Everyone sees an undo happen, not just a board that jumped back.
+                banner={undoNotice && (
+                    <motion.div
+                        key={undoNotice.id}
+                        initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                        data-testid="undo-notice"
+                        role="status"
+                        className="t-label bg-slate-800/95 border border-slate-600 rounded-full px-4 py-1.5 font-black text-slate-200 shadow-xl whitespace-nowrap"
+                    >
+                        ↶ {undoNotice.player === myPlayerId
+                            ? 'You took back your move'
+                            : `${localGameState.players[undoNotice.player]?.name || `Player ${undoNotice.player + 1}`} took back a move`}
+                    </motion.div>
+                )}
             />
 
             {/* Controls Row */}
@@ -215,6 +232,7 @@ const App: React.FC = () => {
                             currentPlayerIndex={localGameState.current_player_index}
                             discardRemaining={discardRemaining}
                             playerNames={localGameState.players.map(p => p.name)}
+                            cardsReturning={undoneBy(localGameState) !== null}
                         />
 
                         <ActionFooter 
