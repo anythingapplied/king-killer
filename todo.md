@@ -23,6 +23,32 @@ open are now closed, and a couple that read as closed turned out to be partial.
         if the replay rules change.
       - Decide who may undo (presumably only the player who moved, before
         the next player acts) and show it to the table.
+- [ ] **The game log and chat still block the screen** (reported after the
+      docked panels landed). They only dock beside the board from 1280px
+      wide (`DOCK_PANELS` in `App.tsx`); anything narrower - a scaled laptop
+      display, a tablet, a phone - still gets the full-screen overlay. Find
+      out the reporter's screen and whether the live site has the docked
+      version yet (it can't until the Fly app is moved and redeployed), then
+      decide how narrow screens should show them without covering the board
+      (e.g. a lower docking width, or a bottom sheet that leaves the hand
+      playable).
+- [ ] **Leaderboard.** Ranked with confidence intervals rather than raw win
+      rate, so someone at 1 win in 1 game isn't on top - e.g. sort by the
+      lower bound of the Wilson score interval. Requested shape:
+      - Split by number of players (solo, 2, 3, 4).
+      - For multiplayer, show both the best individual players and the best
+        team combinations (the same set of people playing together).
+      Open questions for whoever builds it:
+      - **Identity.** There are no accounts: a name is free text per room and
+        a seat token belongs to one room, so the same person isn't
+        recognisable across games yet. Needs some lasting player identity
+        (or an agreed rule such as matching by name) before anything can be
+        counted.
+      - **What counts as a game.** Results come from games reaching Won or
+        Lost; decide about abandoned games, re-deals mid-game, and games
+        where undo was used.
+      - **Where results live.** A results table written when a game ends,
+        rather than replaying `game_history`.
 - [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
       Nothing host-specific was found; the silent case was a page that hadn't
       been interacted with since it loaded, which now shows a "tap to turn on
