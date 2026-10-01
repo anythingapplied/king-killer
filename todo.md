@@ -23,15 +23,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
         if the replay rules change.
       - Decide who may undo (presumably only the player who moved, before
         the next player acts) and show it to the table.
-- [ ] **The game log and chat still block the screen** (reported after the
-      docked panels landed). They only dock beside the board from 1280px
-      wide (`DOCK_PANELS` in `App.tsx`); anything narrower - a scaled laptop
-      display, a tablet, a phone - still gets the full-screen overlay. Find
-      out the reporter's screen and whether the live site has the docked
-      version yet (it can't until the Fly app is moved and redeployed), then
-      decide how narrow screens should show them without covering the board
-      (e.g. a lower docking width, or a bottom sheet that leaves the hand
-      playable).
 - [ ] **Leaderboard.** Ranked with confidence intervals rather than raw win
       rate, so someone at 1 win in 1 game isn't on top - e.g. sort by the
       lower bound of the Wilson score interval. Requested shape:
