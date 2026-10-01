@@ -200,7 +200,25 @@ struct Room {
     /// `RoomSnapshot` doesn't carry it.
     #[serde(default)]
     push_subs: HashMap<String, push::PushSubscription>,
+    /// States the table can be taken back to, newest last. See [`UndoPoint`]
+    /// and `record_undo_point`. Persisted, so an undo survives the server
+    /// sleeping between turns, but never sent to clients: a stored state holds
+    /// every hand and the deck order. `RoomSnapshot::undo_seat` says only who
+    /// may undo.
+    #[serde(default)]
+    undo: Vec<UndoPoint>,
 }
+
+/// The game as it was just before `seat` made a move that revealed nothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UndoPoint {
+    seat: usize,
+    game: GameState,
+}
+
+/// Enough for a whole turn (play, Jester choice, discard) with room to spare,
+/// while keeping the persisted room small - each point is a full game state.
+const UNDO_DEPTH: usize = 5;
 
 impl Room {
     /// Whether this member has at least one open connection right now.
@@ -251,6 +269,9 @@ struct RoomSnapshot {
     you: Option<usize>,
     #[serde(default)]
     chat: Vec<ChatMessage>,
+    /// The seat that may take its last move back right now, if any. Public so
+    /// the whole table can see an undo is possible, not just its owner.
+    undo_seat: Option<usize>,
 }
 
 /// Stand-in for a card the viewer is not entitled to see.
@@ -279,6 +300,8 @@ fn face_down(index: usize) -> Card {
 /// * **Castle deck order** — which enemies remain in the tier is public and the
 ///   UI shows them, but it filters and sorts them itself, so the shuffled order
 ///   (i.e. which enemy comes next) never needs to leave the server.
+/// * **Discard pile** — only its count is shown; what's left after a Hearts
+///   heal would say which cards went under the Tavern.
 ///
 /// Note the seat is self-asserted on the WebSocket, so this defends against
 /// reading another player's hand out of your own client — not against someone
@@ -300,6 +323,13 @@ fn redact_for(snapshot: &RoomSnapshot, seat: Option<usize>) -> RoomSnapshot {
     // reveals nothing about draw order while keeping the tier strip intact.
     view.game.castle_deck.sort_by_key(|c| c.id);
 
+    // A Hearts heal shuffles the pile and moves some of it face down under the
+    // Tavern; the pile that's left would say exactly which cards went. That
+    // matters more now that a heal can be undone - seeing which cards come
+    // back and then taking the play back would be a free peek. The UI only
+    // shows the count (every discard is still in the game log).
+    view.game.discard_pile = (0..view.game.discard_pile.len()).map(face_down).collect();
+
     view
 }
 
@@ -320,6 +350,7 @@ fn snapshot(room: &Room) -> RoomSnapshot {
         // being sent to.
         you: None,
         chat: room.chat.clone(),
+        undo_seat: room.undo.last().map(|point| point.seat),
     }
 }
 
@@ -420,6 +451,8 @@ fn deal_new_game(room: &mut Room, num_players: u32) {
         }
     }
     room.game = game;
+    // Nothing from the old deal can be undone into the new one.
+    room.undo.clear();
 }
 
 /// Claims a seat for a new joiner. Prefers a random free player seat; when the
@@ -636,6 +669,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     live: HashMap::new(),
                     last_starter: None,
                     push_subs: HashMap::new(),
+                    undo: Vec::new(),
                 },
             );
         } else {
@@ -774,6 +808,9 @@ enum GameAction {
     /// Carries no seat: the sender is taken from the socket's authenticated
     /// seat, so a client cannot post as anyone but itself.
     SendChat { text: String },
+    /// Take back the sender's last move. Only allowed while the move revealed
+    /// nothing and nobody else has acted since (see `record_undo_point`).
+    Undo,
 }
 
 /// Error body for a failed REST call, so a non-2xx status carries the same
@@ -856,6 +893,7 @@ async fn create_game(
         live: HashMap::new(),
         last_starter: Some(starter),
         push_subs: HashMap::new(),
+        undo: Vec::new(),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -1103,6 +1141,12 @@ fn should_apply(action: &GameAction, seat: Option<usize>, room: Option<&Room>) -
         // pointless history row, persist and broadcast for a message that
         // apply_action would then drop.
         GameAction::SendChat { .. } => seat.is_some(),
+        // Only the player who made the move being undone. Not tied to whose
+        // turn it is: after a discard the turn has already passed on, and the
+        // player who discarded can still take it back until the next one acts.
+        GameAction::Undo => seat.is_some_and(|s| {
+            room.is_some_and(|r| r.undo.last().is_some_and(|point| point.seat == s))
+        }),
         // Deliberately no catch-all: a new action must state its own
         // authorization rather than defaulting to "allowed".
     }
@@ -1121,6 +1165,7 @@ fn action_type(action: &GameAction) -> &'static str {
         GameAction::NewGame { .. } => "new_game",
         GameAction::SetName { .. } => "set_name",
         GameAction::SendChat { .. } => "send_chat",
+        GameAction::Undo => "undo",
     }
 }
 
@@ -1132,11 +1177,12 @@ fn action_type(action: &GameAction) -> &'static str {
 /// has something to report.
 fn apply_action(room: &mut Room, action: &GameAction, seat: Option<usize>) -> Result<(), String> {
     match action {
-        GameAction::PlayCards { indices } => room.game.play_cards(indices.clone()),
-        GameAction::Yield => room.game.yield_turn(),
-        GameAction::DiscardCards { indices } => room.game.discard_cards(indices.clone()),
-        GameAction::ChooseNextPlayer { index } => room.game.choose_next_player(*index),
-        GameAction::UseSoloJester => room.game.use_solo_jester(),
+        GameAction::PlayCards { indices } => apply_turn(room, seat, |g| g.play_cards(indices.clone())),
+        GameAction::Yield => apply_turn(room, seat, |g| g.yield_turn()),
+        GameAction::DiscardCards { indices } => apply_turn(room, seat, |g| g.discard_cards(indices.clone())),
+        GameAction::ChooseNextPlayer { index } => apply_turn(room, seat, |g| g.choose_next_player(*index)),
+        GameAction::UseSoloJester => apply_turn(room, seat, |g| g.use_solo_jester()),
+        GameAction::Undo => undo_last_move(room, seat),
         GameAction::Reset => {
             deal_new_game(room, room.game.players.len() as u32);
             Ok(())
@@ -1172,6 +1218,70 @@ fn apply_action(room: &mut Room, action: &GameAction, seat: Option<usize>) -> Re
         // match total so adding a variant can't silently break the build.
         GameAction::Ping => Ok(()),
     }
+}
+
+/// Runs a turn action and, if it stands, keeps the undo stack in step with it.
+fn apply_turn(
+    room: &mut Room,
+    seat: Option<usize>,
+    act: impl FnOnce(&mut GameState) -> Result<(), String>,
+) -> Result<(), String> {
+    let before = room.game.clone();
+    act(&mut room.game)?;
+    record_undo_point(room, seat, before);
+    Ok(())
+}
+
+/// Updates `room.undo` after `seat` made a move from `before`.
+///
+/// * A move by anyone else ends the previous player's chance to undo - they
+///   may only take a move back until the next player acts.
+/// * A move that revealed something (see `GameState::is_undoable_from`)
+///   clears the stack: going back past it would hide cards again, so
+///   nothing before it can be undone either.
+/// * Otherwise `before` is pushed, keeping the newest [`UNDO_DEPTH`].
+fn record_undo_point(room: &mut Room, seat: Option<usize>, before: GameState) {
+    let Some(seat) = seat else {
+        room.undo.clear();
+        return;
+    };
+    if room.undo.last().is_some_and(|point| point.seat != seat) {
+        room.undo.clear();
+    }
+    if room.game.is_undoable_from(&before) {
+        room.undo.push(UndoPoint { seat, game: before });
+        if room.undo.len() > UNDO_DEPTH {
+            room.undo.remove(0);
+        }
+    } else {
+        room.undo.clear();
+    }
+}
+
+/// Restores the state from before `seat`'s last move.
+///
+/// The whole state comes back, RNG included, so making the same move again
+/// plays out exactly as it did. Player names are the exception: a rename
+/// since then isn't part of the move. The undo itself is logged so the table
+/// sees what happened, and `game_history` records it as an `undo` row - a
+/// replay has to keep the same stack to know what that row restores.
+fn undo_last_move(room: &mut Room, seat: Option<usize>) -> Result<(), String> {
+    let Some(seat) = seat else {
+        return Err("Nothing to undo".to_string());
+    };
+    if !room.undo.last().is_some_and(|point| point.seat == seat) {
+        return Err("Nothing to undo".to_string());
+    }
+    let Some(point) = room.undo.pop() else {
+        return Err("Nothing to undo".to_string());
+    };
+    let names: Vec<String> = room.game.players.iter().map(|p| p.name.clone()).collect();
+    room.game = point.game;
+    for (player, name) in room.game.players.iter_mut().zip(names) {
+        player.name = name;
+    }
+    room.game.log_undo(seat);
+    Ok(())
 }
 
 async fn ws_handler(
@@ -1377,7 +1487,7 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use king_killer_core::Suit;
+    use king_killer_core::{Enemy, LogKind, Suit, TurnPhase};
 
     // A single-connection in-memory pool keeps the same SQLite database alive
     // for the whole test (each :memory: connection would otherwise be its own DB).
@@ -1410,6 +1520,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         persist_room(&pool, &room).await;
@@ -1487,6 +1598,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         persist_room(&pool, &good).await;
 
@@ -1515,6 +1627,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -1547,6 +1660,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         // Shrink to two players. Seats are reassigned by host-then-recency, so
@@ -1578,6 +1692,7 @@ mod tests {
             live: HashMap::new(),
             last_starter,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         }
     }
 
@@ -1663,6 +1778,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: Some(2), // Carol went first
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         deal_new_game(&mut room, 2); // Carol's own seat no longer exists
@@ -1681,6 +1797,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
@@ -1778,6 +1895,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1808,6 +1926,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         room.push_chat(1, "said by Early");
         room.push_chat(2, "said by Newest");
@@ -1843,6 +1962,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1877,6 +1997,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         for _ in 0..4 {
             claim_seat(&mut room, None);
@@ -1900,6 +2021,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         })
         .await;
         let game = GameState::new(2);
@@ -1924,6 +2046,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -1959,6 +2082,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -1983,6 +2107,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         }
     }
 
@@ -2030,6 +2155,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         let mut issued = Vec::new();
         for name in ["a", "b", "c", "d"] {
@@ -2054,6 +2180,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         }
     }
 
@@ -2093,6 +2220,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
         assert!(is_player);
@@ -2240,6 +2368,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         room.push_chat(0, "hello");
         room
@@ -2303,15 +2432,27 @@ mod tests {
     }
 
     #[test]
+    fn the_discard_pile_keeps_only_its_count() {
+        // What's left after a Hearts heal would say which cards went under the
+        // Tavern - and with the heal undoable, that would be a free peek.
+        let mut room = dealt_room();
+        room.game.discard_pile = vec![
+            Card::new(Suit::Hearts, Rank::Number(4), 7001),
+            Card::new(Suit::Clubs, Rank::Number(8), 7004),
+        ];
+        let view = redact_for(&snapshot(&room), Some(0));
+        assert_eq!(view.game.discard_pile.len(), 2);
+        assert!(view.game.discard_pile.iter().all(|c| c.suit.is_none() && c.id > u32::MAX - 1000));
+    }
+
+    #[test]
     fn public_information_is_left_alone() {
         let mut room = dealt_room();
-        room.game.discard_pile = vec![Card::new(Suit::Hearts, Rank::Number(4), 7001)];
         room.game.played_cards = vec![Card::new(Suit::Spades, Rank::Number(9), 7002)];
         room.game.last_played = Some(vec![Card::new(Suit::Clubs, Rank::Ace, 7003)]);
         let truth = snapshot(&room);
         let view = redact_for(&truth, Some(1));
 
-        assert_eq!(view.game.discard_pile, truth.game.discard_pile);
         assert_eq!(view.game.played_cards, truth.game.played_cards);
         assert_eq!(view.game.last_played, truth.game.last_played);
         assert_eq!(view.game.active_enemy, truth.game.active_enemy);
@@ -2426,6 +2567,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         }
     }
 
@@ -2807,6 +2949,7 @@ mod tests {
             live: HashMap::from([("t0".to_string(), 1), ("t1".to_string(), 1), ("t3".to_string(), 1)]),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -2835,6 +2978,7 @@ mod tests {
             live: HashMap::new(),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         deal_new_game(&mut room, 2);
         let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
@@ -2991,6 +3135,7 @@ mod tests {
             live: HashMap::from([("ta".to_string(), 1)]),
             last_starter: None,
             push_subs: HashMap::new(),
+            undo: Vec::new(),
         };
         let (_, _, sub) = push::tests::subscribed_browser("https://fcm.googleapis.com/fcm/send/bob");
         room.push_subs.insert("tb".to_string(), sub);
@@ -3158,5 +3303,155 @@ mod tests {
             assert!(Instant::now() < deadline, "the dead subscription was kept");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    // ---- Undo ----
+
+    /// Alice (seat 0) to act against a Jack of Clubs, with known hands, Tavern
+    /// and discard pile.
+    fn undo_room() -> Room {
+        let mut room = dealt_room();
+        let mut game = GameState::new_with_seed(42, 2);
+        game.active_enemy = Some(Enemy::new(Card::new(Suit::Clubs, Rank::Jack, 900)));
+        game.players[0].hand = vec![
+            Card::new(Suit::Hearts, Rank::Number(5), 901),
+            Card::new(Suit::Diamonds, Rank::Number(3), 902),
+            Card::new(Suit::Spades, Rank::Number(4), 903),
+            Card::new(Suit::Hearts, Rank::Number(10), 904),
+            Card::new(Suit::Spades, Rank::Number(10), 905),
+        ];
+        game.players[1].hand = vec![
+            Card::new(Suit::Clubs, Rank::Number(2), 906),
+            Card::new(Suit::Clubs, Rank::Number(10), 907),
+        ];
+        game.tavern_deck = (0..6).map(|i| Card::new(Suit::Clubs, Rank::Number(9), 910 + i)).collect();
+        game.discard_pile = (0..6).map(|i| Card::new(Suit::Spades, Rank::Number(8), 920 + i)).collect();
+        game.current_player_index = 0;
+        game.players[0].name = "Alice".to_string();
+        game.players[1].name = "Bob".to_string();
+        room.game = game;
+        room
+    }
+
+    fn act(room: &mut Room, action: GameAction, seat: usize) -> Result<(), String> {
+        assert!(should_apply(&action, Some(seat), Some(room)), "{action:?} from seat {seat} should be allowed");
+        apply_action(room, &action, Some(seat))
+    }
+
+    fn hand_ids(room: &Room, seat: usize) -> Vec<u32> {
+        room.game.players[seat].hand.iter().map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn a_hearts_play_can_be_undone_by_the_player_who_made_it() {
+        let mut room = undo_room();
+        let before = room.game.clone();
+        act(&mut room, GameAction::PlayCards { indices: vec![0] }, 0).unwrap();
+        assert_eq!(room.game.tavern_deck.len(), before.tavern_deck.len() + 5, "the heal happened");
+        assert_eq!(snapshot(&room).undo_seat, Some(0), "the table can see Alice may undo");
+
+        assert!(!should_apply(&GameAction::Undo, Some(1), Some(&room)), "Bob can't undo Alice's move");
+        assert!(!should_apply(&GameAction::Undo, None, Some(&room)), "nor can a watcher");
+
+        act(&mut room, GameAction::Undo, 0).unwrap();
+        assert_eq!(hand_ids(&room, 0), before.players[0].hand.iter().map(|c| c.id).collect::<Vec<_>>());
+        assert_eq!(room.game.tavern_deck.len(), before.tavern_deck.len());
+        assert_eq!(room.game.rng, before.rng, "the shuffle is rewound too");
+        assert_eq!(room.game.phase, TurnPhase::AwaitingPlay);
+        let last = room.game.game_log.last().unwrap();
+        assert_eq!((last.kind, last.player), (LogKind::Undone, Some(0)), "the undo is announced");
+        assert_eq!(snapshot(&room).undo_seat, None);
+        assert!(!should_apply(&GameAction::Undo, Some(0), Some(&room)), "nothing left to undo");
+    }
+
+    #[test]
+    fn a_whole_turn_can_be_undone_step_by_step_until_the_next_player_acts() {
+        let mut room = undo_room();
+        let start = hand_ids(&room, 0);
+        act(&mut room, GameAction::Yield, 0).unwrap();
+        act(&mut room, GameAction::DiscardCards { indices: vec![3] }, 0).unwrap();
+        assert_eq!(room.game.current_player_index, 1, "the turn has passed to Bob");
+        assert_eq!(snapshot(&room).undo_seat, Some(0), "but Alice can still take it back");
+
+        act(&mut room, GameAction::Undo, 0).unwrap();
+        assert!(matches!(room.game.phase, TurnPhase::AwaitingDiscard { .. }), "back to paying the hit");
+        assert_eq!(room.game.current_player_index, 0);
+        act(&mut room, GameAction::Undo, 0).unwrap();
+        assert_eq!(room.game.phase, TurnPhase::AwaitingPlay, "and back before the yield");
+        assert_eq!(hand_ids(&room, 0), start);
+    }
+
+    #[test]
+    fn the_next_player_acting_ends_the_previous_player_s_undo() {
+        let mut room = undo_room();
+        act(&mut room, GameAction::Yield, 0).unwrap();
+        act(&mut room, GameAction::DiscardCards { indices: vec![3] }, 0).unwrap();
+        act(&mut room, GameAction::PlayCards { indices: vec![0] }, 1).unwrap(); // Bob's Clubs 2
+
+        assert!(!should_apply(&GameAction::Undo, Some(0), Some(&room)), "Alice's moves are settled");
+        assert_eq!(room.undo.len(), 1, "only Bob's play is left to undo");
+        assert_eq!(snapshot(&room).undo_seat, Some(1));
+    }
+
+    #[test]
+    fn a_move_that_reveals_cards_can_not_be_undone() {
+        let mut room = undo_room();
+        act(&mut room, GameAction::PlayCards { indices: vec![1] }, 0).unwrap(); // Diamonds 3 draws
+        assert!(room.undo.is_empty(), "a draw is final");
+        assert_eq!(snapshot(&room).undo_seat, None);
+    }
+
+    #[test]
+    fn a_reveal_also_settles_the_moves_before_it() {
+        // Undoing past a draw would pull the drawn cards back out of a hand,
+        // so the earlier points go too.
+        let mut room = undo_room();
+        room.game.active_enemy.as_mut().unwrap().current_health = 40; // survive both hits
+        act(&mut room, GameAction::Yield, 0).unwrap();
+        assert_eq!(room.undo.len(), 1);
+        act(&mut room, GameAction::DiscardCards { indices: vec![3] }, 0).unwrap();
+        assert_eq!(room.undo.len(), 2);
+        room.game.current_player_index = 0; // let Alice go again, as after a Jester choice
+        room.game.phase = TurnPhase::AwaitingPlay;
+        act(&mut room, GameAction::PlayCards { indices: vec![1] }, 0).unwrap(); // Diamonds 3 draws
+        assert!(room.undo.is_empty());
+    }
+
+    #[test]
+    fn a_rename_survives_an_undo() {
+        let mut room = undo_room();
+        act(&mut room, GameAction::PlayCards { indices: vec![2] }, 0).unwrap();
+        act(&mut room, GameAction::SetName { seat: 0, name: "Alicia".to_string() }, 0).unwrap();
+        assert_eq!(snapshot(&room).undo_seat, Some(0), "a rename isn't a move");
+        act(&mut room, GameAction::Undo, 0).unwrap();
+        assert_eq!(room.game.players[0].name, "Alicia");
+    }
+
+    #[test]
+    fn a_new_deal_clears_the_undo_stack() {
+        let mut room = undo_room();
+        act(&mut room, GameAction::PlayCards { indices: vec![2] }, 0).unwrap();
+        act(&mut room, GameAction::NewGame { num_players: 2 }, 0).unwrap();
+        assert!(room.undo.is_empty());
+    }
+
+    #[test]
+    fn the_undo_stack_keeps_only_the_newest_points() {
+        let mut room = undo_room();
+        let before = room.game.clone();
+        for _ in 0..UNDO_DEPTH + 3 {
+            record_undo_point(&mut room, Some(0), before.clone());
+        }
+        assert_eq!(room.undo.len(), UNDO_DEPTH);
+    }
+
+    #[test]
+    fn a_failed_move_leaves_the_undo_stack_alone() {
+        let mut room = undo_room();
+        act(&mut room, GameAction::PlayCards { indices: vec![2] }, 0).unwrap();
+        assert!(matches!(room.game.phase, TurnPhase::AwaitingDiscard { .. }));
+        assert!(act(&mut room, GameAction::DiscardCards { indices: vec![0] }, 0).is_err(), "5 doesn't pay 10");
+        assert_eq!(room.undo.len(), 1);
+        assert_eq!(action_type(&GameAction::Undo), "undo");
     }
 }

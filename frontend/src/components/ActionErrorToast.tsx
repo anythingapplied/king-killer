@@ -17,6 +17,7 @@ const ACTION_LABEL: Record<string, string> = {
     reset: 'Reset',
     set_name: 'Rename',
     send_chat: 'Chat',
+    undo: 'Undo',
 };
 
 /**

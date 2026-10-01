@@ -18,6 +18,7 @@ const STYLES: Record<LogEntry['kind'], { verb: string; tone: string }> = {
     Jester: { verb: 'burned a Jester', tone: 'text-purple-300' },
     EnemyDefeated: { verb: 'Enemy defeated', tone: 'text-green-400' },
     EnemyRevealed: { verb: 'Enemy revealed', tone: 'text-slate-400' },
+    Undone: { verb: 'took back a move', tone: 'text-slate-400 italic' },
 };
 
 const GameLog: React.FC<GameLogProps> = ({ gameState, onClose, docked }) => {

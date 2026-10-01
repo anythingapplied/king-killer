@@ -252,6 +252,9 @@ pub enum LogKind {
     Jester,
     EnemyDefeated,
     EnemyRevealed,
+    /// A player took their last move back. Logged on the restored state, so
+    /// the table sees that it happened even though the move itself is gone.
+    Undone,
 }
 
 /// One event in the running game log.
@@ -761,6 +764,39 @@ impl GameState {
         } else {
             Err("Not in discard phase".to_string())
         }
+    }
+
+    /// Whether this state can be rolled back to `before` without taking back
+    /// anything a player has already seen.
+    ///
+    /// Undo restores a whole earlier state, RNG included, so replaying the
+    /// same move afterwards gives the same result - a Hearts heal can't be
+    /// re-rolled. What it can't restore is knowledge, so a move that turned
+    /// hidden cards face up stays final:
+    /// * any card entering a hand (a Diamonds draw, a solo Jester refill) -
+    ///   the drawer has seen it, and everyone has seen the hand grow;
+    /// * a different enemy (or none) - the next castle card was revealed;
+    /// * the game ending.
+    ///
+    /// A Hearts heal moves cards face down under the Tavern and reveals
+    /// nothing, so it can be undone.
+    pub fn is_undoable_from(&self, before: &GameState) -> bool {
+        if self.status != GameStatus::InProgress || self.players.len() != before.players.len() {
+            return false;
+        }
+        let enemy_id = |s: &GameState| s.active_enemy.as_ref().map(|e| e.card.id);
+        if enemy_id(self) != enemy_id(before) {
+            return false;
+        }
+        self.players.iter().zip(&before.players).all(|(now, then)| {
+            now.hand.iter().all(|card| then.hand.iter().any(|c| c.id == card.id))
+        })
+    }
+
+    /// Records in the game log that `player` took a move back. Called on the
+    /// state that was just restored.
+    pub fn log_undo(&mut self, player: usize) {
+        self.log(Some(player), LogKind::Undone, Vec::new());
     }
 
     /// Test-only wrapper over the private [`GameState::log`], so the cap can be

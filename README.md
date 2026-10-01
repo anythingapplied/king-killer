@@ -58,6 +58,14 @@ stores. All randomness goes through `GameRng`. **Any change to the rules or to
 the RNG must bump `RULES_VERSION`** in `king-killer-core/src/lib.rs`, or stored
 histories will silently replay into a different game.
 
+**Undo restores a snapshot; it doesn't reverse the move.** `Room::undo` keeps
+the whole `GameState` from before each move that revealed nothing (RNG
+included, so a replayed Hearts heal shuffles the same way). A move that puts
+hidden cards face up - a draw, a new enemy - or ends the game clears the stack,
+and so does the next player acting. `GameState::is_undoable_from` is the rule.
+An undo is an `undo` row in `game_history`, so a replay must keep the same
+stack to know what that row restores.
+
 **Some rules are implemented twice.** `frontend/src/gameLogic.ts` mirrors
 `is_valid_combo`, `attack_value` and the clubs-doubling logic so the UI can grey
 out illegal cards. The server is authoritative and **rejects invalid actions
