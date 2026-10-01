@@ -11,6 +11,7 @@ import {
 } from '../turnNotify';
 import { newestSeen, unreadCount } from '../chatUnread';
 import { isWatching } from '../seatState';
+import { arrivedByUndo, undoneBy } from '../undo';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
@@ -88,6 +89,11 @@ export const useGameLogic = () => {
   const [turnNotify, setTurnNotify] = useState<boolean>(() => isTurnNotifyEnabled() && notificationPermission() === 'granted');
   const [notifyPermission, setNotifyPermission] = useState<NotifyPermission>(() => notificationPermission());
   const [chat, setChat] = useState<ChatMessage[]>([]);
+  // Who may take their last move back (from the snapshot), and a brief
+  // "X took back a move" for the whole table when someone does.
+  const [undoSeat, setUndoSeat] = useState<number | null>(null);
+  const [undoNotice, setUndoNotice] = useState<{ id: number; player: number } | null>(null);
+  const undoNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The most recent server-side rejection, e.g. "that combo isn't legal" or
   // "not enough to cover the damage". null once dismissed or timed out.
   const [actionError, setActionError] = useState<{ id: number; action: string; message: string } | null>(null);
@@ -187,7 +193,9 @@ export const useGameLogic = () => {
     if (!localGameState || myPlayerId === null) return;
     const prev = wasMyTurnRef.current;
     wasMyTurnRef.current = isMyTurn;
-    const turnJustArrived = shouldRingTurnChime(prev, isMyTurn, isSolo);
+    // An undo hands the turn back to the player who pressed Undo - it isn't
+    // news to them, so no bell.
+    const turnJustArrived = shouldRingTurnChime(prev, isMyTurn, isSolo) && undoneBy(localGameState) !== myPlayerId;
     if (turnJustArrived) playBellChime();
     // Same trigger, for a player who has switched away and may not hear the
     // chime - see `shouldNotifyTurn`.
@@ -276,6 +284,22 @@ export const useGameLogic = () => {
             setDefeatFlight(null);
             setSelectedIndices([]);
             if (next.status !== 'InProgress') setShowGameOver(true);
+            return;
+        }
+        if (arrivedByUndo(prev, next)) {
+            // Taking a move back isn't combat: health going back up, cards
+            // returning to a hand or a shrinking Tavern must not play as a
+            // heal or a draw. Just show the board as it was, and say why.
+            const player = undoneBy(next);
+            if (player !== null) {
+                if (undoNoticeTimerRef.current) clearTimeout(undoNoticeTimerRef.current);
+                const id = ++effectIdRef.current;
+                setUndoNotice({ id, player });
+                undoNoticeTimerRef.current = setTimeout(() => {
+                    setUndoNotice(current => (current?.id === id ? null : current));
+                }, 2500);
+            }
+            commitLocalState(next);
             return;
         }
         const effects: CombatEffect[] = [];
@@ -427,6 +451,7 @@ export const useGameLogic = () => {
       serverStateRef.current = payload.game;
       setRoster(payload.members);
       setChat(payload.chat ?? []);
+      setUndoSeat(payload.undo_seat ?? null);
       // The server decides which seat this connection holds (it resolves the
       // token); a re-deal can move it, so trust this over the seat stored at
       // join. Guarded so an older server that omits the field doesn't wipe it.
@@ -818,6 +843,7 @@ export const useGameLogic = () => {
     // Without this the next room shows the previous room's conversation until
     // its first snapshot lands, and the seen-marker carries over with it.
     setChat([]); setChatSeenAt(0);
+    setUndoSeat(null); setUndoNotice(null);
   };
 
   useEffect(() => {
@@ -848,6 +874,11 @@ export const useGameLogic = () => {
     homeScreenTip: homeScreenTipOpen && !isSolo && !isSpectator && myPlayerId !== null,
     closeHomeScreenTip,
     chat, sendChat, actionError, dismissActionError,
+    // The server is the judge (it refuses anyone else); this only decides
+    // whether to show the button.
+    canUndo: undoSeat !== null && undoSeat === myPlayerId && !isSpectator,
+    undoLastMove: () => sendAction({ type: 'Undo' }),
+    undoNotice,
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,

@@ -740,3 +740,111 @@ fn jester_player_can_hand_the_turn_to_any_other_seat() {
         assert_eq!(state.phase, TurnPhase::AwaitingPlay);
     }
 }
+
+// ---- Undo: which moves reveal something and must stay final ----
+
+/// Two players, seat 0 to act against a Jack of Clubs, with a known Tavern and
+/// discard pile so Hearts and Diamonds have something to work with.
+fn undo_table() -> GameState {
+    let mut state = GameState::new_with_seed(42, 2);
+    state.active_enemy = Some(Enemy::new(Card::new(Suit::Clubs, Rank::Jack, 900)));
+    state.players[0].hand = vec![
+        Card::new(Suit::Hearts, Rank::Number(5), 901),
+        Card::new(Suit::Diamonds, Rank::Number(3), 902),
+        Card::new(Suit::Spades, Rank::Number(4), 903),
+        Card::new(Suit::Hearts, Rank::Number(10), 904),
+        Card::new(Suit::Spades, Rank::Number(10), 905),
+    ];
+    state.players[1].hand = vec![Card::new(Suit::Clubs, Rank::Number(2), 906)];
+    state.tavern_deck = (0..6).map(|i| Card::new(Suit::Clubs, Rank::Number(9), 910 + i)).collect();
+    state.discard_pile = (0..6).map(|i| Card::new(Suit::Spades, Rank::Number(8), 920 + i)).collect();
+    state.current_player_index = 0;
+    state
+}
+
+#[test]
+fn a_hearts_heal_can_be_undone() {
+    let before = undo_table();
+    let mut after = before.clone();
+    after.play_cards(vec![0]).unwrap(); // Hearts 5: heal 5 into the Tavern
+    assert_eq!(after.tavern_deck.len(), before.tavern_deck.len() + 5);
+    assert!(after.is_undoable_from(&before));
+}
+
+#[test]
+fn replaying_an_undone_heal_shuffles_the_same_way() {
+    // The RNG travels with the state, so going back and making the same play
+    // can't re-roll which cards the heal returns.
+    let before = undo_table();
+    let mut first = before.clone();
+    first.play_cards(vec![0]).unwrap();
+    let mut again = before.clone();
+    again.play_cards(vec![0]).unwrap();
+    let ids = |s: &GameState| s.tavern_deck.iter().map(|c| c.id).collect::<Vec<_>>();
+    assert_eq!(ids(&first), ids(&again));
+}
+
+#[test]
+fn spades_yields_discards_and_jester_choices_can_be_undone() {
+    let before = undo_table();
+    let mut spades = before.clone();
+    spades.play_cards(vec![2]).unwrap();
+    assert!(spades.is_undoable_from(&before));
+
+    let mut yielded = before.clone();
+    yielded.yield_turn().unwrap();
+    assert!(yielded.is_undoable_from(&before));
+
+    // The discard that pays for the hit passes the turn on, and still reveals
+    // nothing.
+    let mid = yielded.clone();
+    let mut discarded = mid.clone();
+    discarded.discard_cards(vec![3]).unwrap();
+    assert_eq!(discarded.current_player_index, 1);
+    assert!(discarded.is_undoable_from(&mid));
+}
+
+#[test]
+fn a_diamonds_draw_is_final() {
+    let before = undo_table();
+    let mut after = before.clone();
+    after.play_cards(vec![1]).unwrap(); // Diamonds 3: draws
+    assert!(!after.is_undoable_from(&before));
+}
+
+#[test]
+fn defeating_an_enemy_is_final() {
+    let mut before = undo_table();
+    before.active_enemy.as_mut().unwrap().current_health = 5;
+    let mut after = before.clone();
+    after.play_cards(vec![4]).unwrap(); // Spades 10 kills it; the next enemy is revealed
+    assert!(!after.is_undoable_from(&before));
+}
+
+#[test]
+fn a_solo_jester_refill_is_final() {
+    let mut before = GameState::new_with_seed(7, 1);
+    before.players[0].hand.truncate(2);
+    let mut after = before.clone();
+    after.use_solo_jester().unwrap();
+    assert!(!after.is_undoable_from(&before));
+}
+
+#[test]
+fn a_losing_move_is_final() {
+    let mut before = undo_table();
+    before.players[0].hand = vec![Card::new(Suit::Spades, Rank::Number(2), 930)];
+    let mut after = before.clone();
+    after.play_cards(vec![0]).unwrap(); // leaves nothing to pay the hit with
+    assert!(matches!(after.status, GameStatus::Lost(_)));
+    assert!(!after.is_undoable_from(&before));
+}
+
+#[test]
+fn log_undo_records_who_took_a_move_back() {
+    let mut state = undo_table();
+    state.log_undo(0);
+    let last = state.game_log.last().unwrap();
+    assert_eq!(last.kind, LogKind::Undone);
+    assert_eq!(last.player, Some(0));
+}
