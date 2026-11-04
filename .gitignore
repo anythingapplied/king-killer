@@ -34,3 +34,11 @@ devenv.lock
 # Runtime SQLite artifacts (DATA_DIR default is ./data)
 /data/
 frontend/data/
+
+# Secrets and backups (Standards 14.1, 6.4)
+*.clixml
+*.pfx
+*.key
+*.bak
+*.env
+appsettings.*.local.json
