@@ -1,0 +1,20 @@
+# Line endings and encoding (Standards 14): text files are normalized to LF in the repository
+* text=auto
+
+# Shell scripts must keep LF to run on Linux and macOS
+*.sh text eol=lf
+
+# Binary files: never convert or diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.docx binary
+*.xlsx binary
