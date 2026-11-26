@@ -48,6 +48,7 @@ const App: React.FC = () => {
         gameId, myPlayerId, roster, localGameState, selectedIndices, copySuccess, showGameOver, setShowGameOver, activeEffects,
         defeatFlight, finishDefeatFlight, killingBlow, reconnecting, seatedPlayer, canYield, currentTierEnemies, muted, toggleMute, turnNotify, notifyPermission, toggleTurnNotify, soundBlocked, enableSound, homeScreenTip, closeHomeScreenTip, isSpectator, isHost, chat, sendChat, unreadChat, markChatRead, actionError, dismissActionError, canUndo, undoLastMove, undoNotice,
         sortedHand, currentDiscardValue, damageNeeded, isMyTurn, isSolo, discardRemaining, isImmuneWarning,
+        namePromptFor, joinWithName, cancelNamePrompt,
         createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
     } = useGameLogic();
 
@@ -68,6 +69,41 @@ const App: React.FC = () => {
         // markChatRead is rebuilt each render; chat.length is the real trigger.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showChat, chat.length]);
+
+    // Joining (usually from an invite link) with no name saved: ask before
+    // taking the seat, so the table sees a name rather than "P2".
+    if (!gameId && namePromptFor) {
+        const canJoin = playerName.trim().length > 0;
+        return (
+            <div className="board-shell flex flex-col items-center justify-center bg-slate-900 text-white p-4 text-center overflow-y-auto">
+                <form
+                    data-testid="name-prompt"
+                    onSubmit={(e) => { e.preventDefault(); if (canJoin) joinWithName(playerName); }}
+                    className="bg-slate-800 p-5 sm:p-8 rounded-3xl shadow-2xl w-full max-w-md border border-slate-700"
+                >
+                    <h1 className="text-lg sm:text-xl font-bold mb-1 text-slate-300">Join game {namePromptFor}</h1>
+                    <p className="t-label text-slate-400 mb-4 sm:mb-6">What should the table call you?</p>
+                    <input
+                        type="text"
+                        {...NO_AUTOFILL}
+                        autoFocus
+                        aria-label="Your name"
+                        placeholder="YOUR NAME"
+                        value={playerName}
+                        onChange={(e) => setPlayerName(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-3 px-4 text-center font-bold focus:ring-2 focus:ring-blue-500 outline-none t-body mb-4 sm:mb-6"
+                        maxLength={20}
+                    />
+                    <button type="submit" disabled={!canJoin} className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-black py-4 rounded-2xl shadow-lg active:scale-95 transition-all text-base sm:text-lg mb-3">
+                        Join
+                    </button>
+                    <button type="button" onClick={cancelNamePrompt} className="t-label text-slate-400 hover:text-slate-200 font-bold uppercase tracking-widest">
+                        Back to menu
+                    </button>
+                </form>
+            </div>
+        );
+    }
 
     if (!gameId) {
         return (

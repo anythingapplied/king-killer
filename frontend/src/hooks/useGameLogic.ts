@@ -89,6 +89,9 @@ export const useGameLogic = () => {
   const [turnNotify, setTurnNotify] = useState<boolean>(() => isTurnNotifyEnabled() && notificationPermission() === 'granted');
   const [notifyPermission, setNotifyPermission] = useState<NotifyPermission>(() => notificationPermission());
   const [chat, setChat] = useState<ChatMessage[]>([]);
+  // A join waiting on the player's name (see joinGame): the room and whether
+  // entering it should add a history entry.
+  const [namePrompt, setNamePrompt] = useState<{ id: string; push: boolean } | null>(null);
   // Who may take their last move back (from the snapshot), and a brief
   // "X took back a move" for the whole table when someone does.
   const [undoSeat, setUndoSeat] = useState<number | null>(null);
@@ -682,7 +685,14 @@ export const useGameLogic = () => {
         return;
       }
 
-      const playerName = localStorage.getItem('kingkiller_player_name') || '';
+      // A fresh join is when the table learns who you are. Joining nameless
+      // used to leave you as "P2" on everyone's roster until you found the
+      // rename button, so ask first; the prompt calls back into joinGame.
+      const playerName = localStorage.getItem('kingkiller_player_name')?.trim() || '';
+      if (!playerName) {
+        setNamePrompt({ id, push });
+        return;
+      }
       const joinRes = await fetch(`${API_BASE}/api/game/${id}/join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -705,6 +715,21 @@ export const useGameLogic = () => {
     } finally {
       joiningRef.current.delete(id);
     }
+  };
+
+  /** Finishes a join that stopped to ask for a name. */
+  const joinWithName = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || !namePrompt) return;
+    localStorage.setItem('kingkiller_player_name', trimmed);
+    setNamePrompt(null);
+    void joinGame(namePrompt.id, namePrompt.push);
+  };
+
+  /** Backs out of a join at the name prompt, to the main menu. */
+  const cancelNamePrompt = () => {
+    setNamePrompt(null);
+    clearUrlGameId(false);
   };
 
   useEffect(() => {
@@ -882,6 +907,7 @@ export const useGameLogic = () => {
     unreadChat: unreadCount(chat, chatSeenAt),
     markChatRead: () => setChatSeenAt(newestSeen(chat, chatSeenAt)),
     sortedHand, currentTierEnemies, currentDiscardValue, damageNeeded, isMyTurn, isSolo, isSpectator, discardRemaining, isImmuneWarning,
+    namePromptFor: namePrompt?.id ?? null, joinWithName, cancelNamePrompt,
     createGame, joinGame, sendAction, toggleCard, chooseNextPlayer, copyId, exitToMenu, restartTable, startNewGame, renamePlayer
   };
 };

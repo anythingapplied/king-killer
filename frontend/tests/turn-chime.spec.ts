@@ -1,5 +1,6 @@
 import { type Page } from '@playwright/test';
 import { test, expect, DEV_URL } from './fixtures';
+import { joinByLink } from './helpers';
 
 // The "your turn" chime must actually sound for every seat - the host included.
 // Web Audio is instrumented so the test sees what the page asked the audio
@@ -90,8 +91,7 @@ test('the turn chime sounds for the host and for a joiner', async ({ browser }) 
     await host.fill('input[placeholder="YOUR NAME"]', 'Host');
     await host.click('button:has-text("2 Players")');
     await host.waitForSelector('[data-testid="hud"]');
-    await joiner.goto(host.url());
-    await joiner.waitForSelector('[data-testid="hud"]');
+    await joinByLink(joiner, host.url(), 'Joiner');
     await host.waitForTimeout(500);
 
     // Play until each seat has had the turn arrive at least twice.

@@ -1,6 +1,7 @@
 // The fixture boots a fresh API for each test; see tests/fixtures.ts.
 import { type Page } from '@playwright/test';
 import { test, expect, DEV_URL } from './fixtures';
+import { joinByLink } from './helpers';
 
 const handCards = (page: Page) => page.locator('[data-testid="hand-area"] img');
 
@@ -17,7 +18,7 @@ test('a yield can be taken back, and the whole table is told', async ({ browser 
     await host.fill('input[placeholder="YOUR NAME"]', 'Host');
     await host.click('button:has-text("2 Players")');
     await host.waitForSelector('[data-testid="hud"]');
-    await joiner.goto(host.url());
+    await joinByLink(joiner, host.url(), 'Joiner');
     await joiner.waitForSelector('[data-testid="hand-area"] img');
     await host.waitForTimeout(500);
 

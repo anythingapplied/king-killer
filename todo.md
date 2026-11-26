@@ -246,6 +246,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
       Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
       the docked panels clear the board, a card can still be selected, and
       chat sends from the docked panel.
+- [x] **Joiners show by name, straight away.** A join saved the new member
+      but never broadcast the room, so players already at the table saw
+      "P2", "P3"... until the next move; it now broadcasts like any action.
+      And opening an invite link with no saved name now asks for one before
+      taking a seat (with "Back to menu" to leave without one), so nobody
+      joins nameless. `name-prompt.spec.ts` covers both.
 - [x] **Text fields don't trigger password managers.** A lone name box read
       as a username field. Every input spreads `NO_AUTOFILL`
       (`autocomplete="off"` plus the 1Password, LastPass, Bitwarden and
