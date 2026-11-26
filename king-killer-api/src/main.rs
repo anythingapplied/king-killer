@@ -29,6 +29,13 @@
 //! reconnect transparently and replay any buffered actions, so a shutdown
 //! mid-game is invisible. Chat and game state therefore have to survive in the
 //! database, not in memory.
+//!
+//! # Changes
+//!
+//! * 2026-11-25: A join now broadcasts the room. It only saved it, so players
+//!   already connected kept showing "P2", "P3"... for everyone who joined
+//!   after them until the next move. `broadcast_room` is now the one place a
+//!   room is sent to its connections.
 
 mod push;
 
@@ -948,8 +955,25 @@ async fn join_game_seat(
     };
 
     persist_room(&state.db, &response.1).await;
+    // Everyone already at the table learns the new player's name and seat now,
+    // not at the next move: a join used to reach only the database, so each
+    // player's roster showed "P2", "P3"... for anyone who joined after them.
+    broadcast_room(&state, &response.1);
     touch(&state.last_activity);
     Ok(Json(response.0))
+}
+
+/// Sends the room as it is now to every open connection in it.
+///
+/// Unredacted on purpose: one snapshot goes onto the channel and each
+/// connection's send task narrows it to the seat it holds. Redacting here
+/// would flatten everyone's view to a single seat's.
+fn broadcast_room(state: &AppState, room: &Room) {
+    if let Some(tx) = state.broadcasts.read().unwrap().get(&room.id) {
+        // Err only means nobody is connected right now - harmless, since a
+        // connection is sent the room as soon as it opens.
+        let _ = tx.send(ServerMessage::State(snapshot(room)));
+    }
 }
 
 async fn get_game(
@@ -1459,14 +1483,7 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                     record_history(&state_recv.db, &id, type_label, &action, &room.game).await;
                     persist_room(&state_recv.db, &room).await;
 
-                    let broadcasts = state_recv.broadcasts.read().unwrap();
-                    if let Some(tx) = broadcasts.get(&id) {
-                        // Unredacted on purpose: one snapshot goes onto the
-                        // channel and each connection's send task narrows it to
-                        // its own seat. Redacting here would flatten everyone's
-                        // view to a single seat's.
-                        let _ = tx.send(ServerMessage::State(snapshot(&room)));
-                    }
+                    broadcast_room(&state_recv, &room);
                     touch(&state_recv.last_activity);
 
                     // The turn reached someone whose page isn't running: push.
@@ -2829,6 +2846,32 @@ mod tests {
         let game = &msg["payload"]["game"];
         assert!(game["players"][1]["hand"].as_array().unwrap().iter().all(|c| !c["suit"].is_null()), "Bob sees his own hand");
         assert!(hands_are_hidden(game, Some(1)), "and nobody else's");
+    }
+
+    #[tokio::test]
+    async fn ws_a_join_reaches_players_already_at_the_table() {
+        // The reported bug: the host's roster read "P2 P3 P4" after named
+        // players joined, because a join was saved but never sent out.
+        let state = test_state().await;
+        let created = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 3, player_name: Some("Alice".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &created.id, Some(&created.token)).await;
+        recv(&mut alice).await; // initial snapshot
+
+        let bob = join_game_seat(Path(created.id.clone()), State(state.clone()), Json(JoinRequest { name: Some("Bob".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let msg = recv(&mut alice).await;
+        assert_eq!(msg["type"], "State");
+        let payload = &msg["payload"];
+        assert_eq!(payload["game"]["players"][bob.seat_index]["name"], "Bob", "Alice sees Bob's name without anyone moving");
+        assert_eq!(payload["you"], 0, "still redacted for Alice's own seat");
+        assert!(hands_are_hidden(&payload["game"], Some(0)), "and Bob's hand stays hidden");
+        assert!(payload["members"].as_array().unwrap().iter().all(|m| m.get("token").is_none()), "no token in the broadcast");
     }
 
     #[tokio::test]
