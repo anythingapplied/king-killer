@@ -67,7 +67,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
     }, [showPlays]);
 
     return (
-        <div className="min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
+        <div className="arena-row min-h-0 flex flex-row items-stretch justify-center gap-2 sm:gap-4 lg:gap-12 relative py-2 sm:py-4 w-full max-w-6xl mx-auto px-2 sm:px-4 overflow-hidden">
             {/* Absolute, so it never pushes the board around; below the HUD
                 whatever the HUD's height. */}
             <div className="absolute top-1 left-1/2 -translate-x-1/2 z-[60] pointer-events-none">
@@ -124,7 +124,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
             {/* Center: Active Enemy. The card region is a flex child with
                 min-h-0, so the card is sized by whatever height this row
                 actually got rather than by a guessed vh fraction. */}
-            <div data-testid="enemy-area" className="flex flex-col items-center justify-center gap-2 sm:gap-3 flex-1 min-w-0 min-h-0 relative pt-5 sm:pt-7">
+            <div data-testid="enemy-area" className="enemy-area flex flex-col items-center justify-center gap-2 sm:gap-3 flex-1 min-w-0 min-h-0 relative pt-5 sm:pt-7">
                 {gameState.active_enemy ? (
                     <>
                         <motion.div 
@@ -133,7 +133,7 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             animate={{ opacity: 1, y: 0, scale: 1 }} 
                             transition={{ type: 'spring', stiffness: 420, damping: 32 }}
                             data-testid="enemy-card"
-                            className="relative flex-1 min-h-0 flex items-center justify-center w-full group"
+                            className="enemy-card-box relative flex-1 min-h-0 flex items-center justify-center w-full group"
                         >
                             <div className="absolute inset-0 bg-red-500/20 blur-[60px] rounded-full scale-150 -z-10 group-hover:bg-red-500/30 transition-colors duration-500"></div>
                             
@@ -190,7 +190,9 @@ const Arena: React.FC<ArenaProps> = ({ gameState, activeEffects, isImmuneWarning
                             )}
                         </motion.div>
                         
-                        <div className="flex justify-center gap-3 sm:gap-8 relative z-20 flex-shrink-0 w-full">
+                        {/* Under the card, or beside it on short, wide screens
+                            (.enemy-stats in index.css). */}
+                        <div className="enemy-stats flex justify-center gap-3 sm:gap-8 relative z-20 flex-shrink-0 w-full">
                             <div className="bg-slate-900/80 backdrop-blur-md px-3 sm:px-6 py-1 sm:py-2 rounded-xl sm:rounded-2xl border border-red-500/30 flex flex-col items-center min-w-[4.5rem] sm:min-w-[100px] shadow-2xl relative">
                                 <span className="t-micro text-red-400 font-black uppercase tracking-tighter">Health</span>
                                 <span className="t-stat font-black text-white leading-none">{gameState.active_enemy.current_health}</span>

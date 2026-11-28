@@ -8,13 +8,6 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **The enemy card is too small on short screens.** Measured at the
-      start of a solo game: 91px tall at 1280x720 (smaller than the 115px hand
-      cards) and 126px at 1366x768, against 324-378px on a phone, tablet or
-      desktop. On a phone in landscape (844x390) it collapses to nothing and
-      only Health/Attack show. The HUD (~230px with the tier strip, solo
-      Jesters and roster rows) and the Health/Attack row take the height the
-      card needs.
 - [ ] **Decide: sign-in** (Standards 4.2). The standard wants every endpoint
       behind a sign-in through an identity provider; the brief (`AGENT.md`)
       says no logins for now. Either record an approved deviation (an
@@ -252,6 +245,13 @@ open are now closed, and a couple that read as closed turned out to be partial.
       Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
       the docked panels clear the board, a card can still be selected, and
       chat sends from the docked panel.
+- [x] **The enemy card stays the biggest card on short screens.** It was
+      91px at 1280x720 (smaller than a hand card) and vanished on a phone held
+      sideways. On short, wide screens Health/Attack now sit beside the card,
+      the tier thumbnails are bounded by height, and below 500px tall the
+      HUD's rows go side by side and the hand and footer tighten. Now 206-251px
+      at 1280x720 and 89-99px sideways on a phone, never below a hand card;
+      tall screens are unchanged. `enemy-size.spec.ts` guards it.
 - [x] **Standards review fixes** (2026-11-27). Failed saves are logged, not
       discarded; security headers (CSP, HSTS, nosniff, Referrer-Policy) on
       every response; `GET /api/health` with the deployed commit; rate limits

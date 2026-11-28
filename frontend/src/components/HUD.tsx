@@ -188,7 +188,10 @@ const HUD: React.FC<HUDProps> = ({
                 )}
             </div>
 
-            <div className="flex justify-between items-center mb-1 px-1 sm:px-2 gap-2">
+            {/* Stacked rows, or side by side on a very short screen (a phone
+                held sideways) - see .hud-body in index.css. */}
+            <div className="hud-body">
+            <div className="hud-piles flex justify-between items-center mb-1 px-1 sm:px-2 gap-2">
                 <div className="text-center w-12 sm:w-16 relative flex-shrink-0" data-testid="tavern-slot">
                     <div className="t-micro uppercase tracking-wider text-green-400 font-black">Tavern</div>
                     <div className="t-body font-black leading-none whitespace-nowrap">🍺 {gameState.tavern_deck.length}</div>
@@ -251,6 +254,7 @@ const HUD: React.FC<HUDProps> = ({
                         </div>
                     );
                 })}
+            </div>
             </div>
 
             {watching.length > 0 && (
