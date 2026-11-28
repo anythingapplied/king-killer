@@ -15,6 +15,18 @@ open are now closed, and a couple that read as closed turned out to be partial.
       only Health/Attack show. The HUD (~230px with the tier strip, solo
       Jesters and roster rows) and the Health/Attack row take the height the
       card needs.
+- [ ] **Decide: sign-in** (Standards 4.2). The standard wants every endpoint
+      behind a sign-in through an identity provider; the brief (`AGENT.md`)
+      says no logins for now. Either record an approved deviation (an
+      anonymous public game) in the README, or add sign-in - which would also
+      replace the cookie profile as the leaderboard identity.
+- [ ] **Decide: where seat tokens live** (Standards 4.2; the web checker's
+      two `TokenInStorage` errors). They're in `localStorage`, readable by any
+      script on the page. Either move them into an `HttpOnly` cookie per room
+      (as the profile already is), or record a deviation: a token holds one
+      game seat and no personal data.
+- [ ] **Name the incident contacts** (Standards 4.15) in the README's
+      "Security and data" section: who to tell about a suspected leak.
 - [ ] **How long player profiles and results are kept** (Standards 4.7).
       Names live in `players` and finished games in `game_results`, with no
       deletion yet. Decide a retention period (or write down "kept for the
@@ -240,6 +252,14 @@ open are now closed, and a couple that read as closed turned out to be partial.
       Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
       the docked panels clear the board, a card can still be selected, and
       chat sends from the docked panel.
+- [x] **Standards review fixes** (2026-11-27). Failed saves are logged, not
+      discarded; security headers (CSP, HSTS, nosniff, Referrer-Policy) on
+      every response; `GET /api/health` with the deployed commit; rate limits
+      on create and join; 16 KiB WebSocket messages; strict TypeScript; exact
+      versions everywhere, unused crates removed, npm audit clean, Dependabot
+      on; one card generator that writes into the repo (it had a hard-coded
+      home path); a `CLAUDE.md` pointing agents at the standards; and the
+      README's security, data and threat-model notes.
 - [x] **Leaderboard, with lasting player profiles.** A browser gets an
       `HttpOnly` profile cookie on its first create or join (only its hash is
       stored), rooms link members to profiles, and a game that reaches Won or

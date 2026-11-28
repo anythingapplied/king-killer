@@ -118,9 +118,45 @@ adds it) so another site can't act with a visitor's cookie. See
 **Times are UTC.** SQLite's `CURRENT_TIMESTAMP` (stored rows) and the chat's
 epoch milliseconds; the page shows chat times in the viewer's local time.
 
+## Security and data
+
+**What it holds** (Standards 4.7). Player names as typed, chat messages, the
+game state, finished-game results, and push-subscription endpoints. Names and
+chat can carry personal data, so treat the database as **Confidential**:
+HTTPS only (`force_https` on Fly), and the volume and its backups are for the
+people who run the server. Nothing else about players is collected: no
+e-mail, no accounts, no addresses in the database.
+
+**How long it's kept.** Not yet decided - rooms, chat, profiles and results
+currently stay until deleted by hand. Open in `todo.md`.
+
+**If something goes wrong** (4.15). Report a suspected leak or breach to the
+repository owner straight away. Contacts: not yet named - open in `todo.md`.
+
+**Threat model** (4.1, STRIDE), and how each is handled:
+
+| Threat | Handled by |
+|---|---|
+| Acting as another player (spoofing) | The seat comes from a secret token issued at join, the person from an `HttpOnly` profile cookie; neither is ever taken from a message body. |
+| Another site acting with a player's cookie (CSRF) | Every POST needs `X-Requested-With`; there is no CORS, so no other origin can add it. |
+| Seeing hidden cards (information disclosure) | Each connection gets a view redacted for its own seat: other hands, the Tavern order, the castle order and the discard pile are hidden. |
+| Script injection (tampering) | React escapes everything shown; the Content-Security-Policy allows only this origin's scripts and nothing inline. |
+| Flooding rooms or seats (denial of service) | Per-client rate limits on create and join; 16 KiB WebSocket messages; capped chat and logs. |
+| Reading the database (disclosure) | Profile cookies are stored only as SHA-256 hashes; seat tokens never leave the server except in the one response that issues them. |
+
+Not covered yet: there is no sign-in (by design, see `AGENT.md`), and seat
+tokens are kept in the browser's `localStorage`, where any script on the page
+could read them. Both are open decisions in `todo.md`.
+
 ## Deploying
 
-Fly.io, via the `Dockerfile` (`fly deploy`). `fly.toml` sets
+Fly.io, via the `Dockerfile`:
+
+```bash
+fly deploy --build-arg GIT_COMMIT=$(git rev-parse HEAD)
+```
+
+`GET /api/health` then reports that commit; check it after a deploy. `fly.toml` sets
 `auto_stop_machines` with `min_machines_running = 0`, which is the other half of
 the idle-shutdown behaviour above. The database lives on a mounted volume at
 `/data`.
