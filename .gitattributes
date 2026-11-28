@@ -4,6 +4,11 @@
 # Shell scripts must keep LF to run on Linux and macOS
 *.sh text eol=lf
 
+# Migrations keep LF everywhere: sqlx checksums each file's bytes, so a CRLF
+# copy on Windows would refuse to run against a database migrated from an LF
+# copy (production builds on Linux), and the reverse.
+king-killer-api/migrations/*.sql text eol=lf
+
 # Binary files: never convert or diff
 *.png binary
 *.jpg binary

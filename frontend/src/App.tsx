@@ -8,6 +8,7 @@ import ActionFooter from './components/ActionFooter';
 import GameLog from './components/GameLog';
 import Chat from './components/Chat';
 import ActionErrorToast from './components/ActionErrorToast';
+import Leaderboard from './components/Leaderboard';
 import { canRenderBoard } from './seatState';
 import { useMediaQuery } from './hooks/useMediaQuery';
 import { undoneBy } from './undo';
@@ -56,6 +57,7 @@ const App: React.FC = () => {
     const [showChat, setShowChat] = useState(false);
     const [playerName, setPlayerName] = useState(() => localStorage.getItem('kingkiller_player_name') || '');
     const [showNewGame, setShowNewGame] = useState(false);
+    const [showLeaderboard, setShowLeaderboard] = useState(false);
     const docked = useMediaQuery(DOCK_PANELS);
 
     useEffect(() => {
@@ -142,9 +144,19 @@ const App: React.FC = () => {
                         {...NO_AUTOFILL}
                         placeholder="PASTE GAME LINK"
                         className="w-full bg-slate-900 border border-slate-700 rounded-2xl py-4 sm:py-5 px-4 text-center font-mono focus:ring-2 focus:ring-blue-500 outline-none uppercase text-base sm:text-lg" 
-                        onKeyDown={(e) => { if (e.key === 'Enter') joinGame(e.currentTarget.value.trim()); }} 
+                        onKeyDown={(e) => { if (e.key === 'Enter') joinGame(e.currentTarget.value.trim()); }}
                     />
                 </div>
+                <button
+                    onClick={() => setShowLeaderboard(true)}
+                    data-testid="leaderboard-open"
+                    className="t-label mt-4 sm:mt-6 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 font-black px-6 py-3 rounded-full uppercase tracking-widest"
+                >
+                    🏆 Leaderboard
+                </button>
+                <AnimatePresence>
+                    {showLeaderboard && <Leaderboard onClose={() => setShowLeaderboard(false)} />}
+                </AnimatePresence>
             </div>
         );
     }
@@ -333,9 +345,17 @@ const App: React.FC = () => {
                             {isHost && (
                                 <button onClick={() => setShowNewGame(true)} className="t-label w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-amber-800 uppercase tracking-widest mb-3 sm:mb-4">New Game</button>
                             )}
+                            <button onClick={() => setShowLeaderboard(true)} data-testid="leaderboard-open" className="t-label w-full bg-slate-800 hover:bg-slate-700 text-amber-300 font-black py-3 sm:py-4 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border border-slate-600 uppercase tracking-widest mb-3 sm:mb-4">🏆 Leaderboard</button>
                             <button onClick={() => exitToMenu()} className="t-label w-full bg-slate-700 hover:bg-slate-600 text-white font-black py-4 sm:py-6 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl transition-all active:scale-95 border-b-4 border-slate-900 uppercase tracking-widest">Main Menu</button>
                         </motion.div>
                     </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* After the game-over card in the DOM, so it opens on top of it. */}
+            <AnimatePresence>
+                {showLeaderboard && (
+                    <Leaderboard initialPlayerCount={localGameState.players.length} onClose={() => setShowLeaderboard(false)} />
                 )}
             </AnimatePresence>
 

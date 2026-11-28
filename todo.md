@@ -8,23 +8,17 @@ open are now closed, and a couple that read as closed turned out to be partial.
 
 ### Gameplay / UX
 
-- [ ] **Leaderboard.** Ranked with confidence intervals rather than raw win
-      rate, so someone at 1 win in 1 game isn't on top - e.g. sort by the
-      lower bound of the Wilson score interval. Requested shape:
-      - Split by number of players (solo, 2, 3, 4).
-      - For multiplayer, show both the best individual players and the best
-        team combinations (the same set of people playing together).
-      Open questions for whoever builds it:
-      - **Identity.** There are no accounts: a name is free text per room and
-        a seat token belongs to one room, so the same person isn't
-        recognisable across games yet. Needs some lasting player identity
-        (or an agreed rule such as matching by name) before anything can be
-        counted.
-      - **What counts as a game.** Results come from games reaching Won or
-        Lost; decide about abandoned games, re-deals mid-game, and games
-        where undo was used.
-      - **Where results live.** A results table written when a game ends,
-        rather than replaying `game_history`.
+- [ ] **The enemy card is too small on short screens.** Measured at the
+      start of a solo game: 91px tall at 1280x720 (smaller than the 115px hand
+      cards) and 126px at 1366x768, against 324-378px on a phone, tablet or
+      desktop. On a phone in landscape (844x390) it collapses to nothing and
+      only Health/Attack show. The HUD (~230px with the tier strip, solo
+      Jesters and roster rows) and the Health/Attack row take the height the
+      card needs.
+- [ ] **How long player profiles and results are kept** (Standards 4.7).
+      Names live in `players` and finished games in `game_results`, with no
+      deletion yet. Decide a retention period (or write down "kept for the
+      leaderboard's life") and, if one, a job that removes older rows.
 - [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
       Nothing host-specific was found; the silent case was a page that hadn't
       been interacted with since it loaded, which now shows a "tap to turn on
@@ -246,6 +240,18 @@ open are now closed, and a couple that read as closed turned out to be partial.
       Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
       the docked panels clear the board, a card can still be selected, and
       chat sends from the docked panel.
+- [x] **Leaderboard, with lasting player profiles.** A browser gets an
+      `HttpOnly` profile cookie on its first create or join (only its hash is
+      stored), rooms link members to profiles, and a game that reaches Won or
+      Lost is recorded once. Standings per table size - best players, and
+      for multiplayer best teams (the same people, any seats) - are ranked by
+      the lower bound of the 95% Wilson interval, so 1 win in 1 game shows
+      "at least 21%" and can't top the board. Abandoned games and mid-game
+      re-deals never finish, so never count; games with an undo count. Open
+      from the main menu or the game-over card. Along the way the API lost
+      its any-origin CORS (Vite now proxies /api in development), every POST
+      needs `X-Requested-With`, and REST calls go through one module with a
+      time limit (`frontend/src/api.ts`).
 - [x] **Joiners show by name, straight away.** A join saved the new member
       but never broadcast the room, so players already at the table saw
       "P2", "P3"... until the next move; it now broadcasts like any action.

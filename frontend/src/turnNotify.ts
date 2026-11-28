@@ -1,3 +1,5 @@
+import { apiFetch, apiPostJson } from './api';
+
 // "You're up" as a system notification, for a player who has switched away
 // from the tab. The chime covers a player who can hear the page; the flashing
 // title only helps on desktop, where the tab strip is visible.
@@ -171,10 +173,9 @@ export const pushSupported = (): boolean =>
  * Registers (or, when `enabled` is false, withdraws) this browser's push
  * subscription for one room, proving the seat with its token. Best effort:
  * if the server has no VAPID keys or anything fails, the page-only
- * notification is still there, so errors are swallowed.
+ * notification is still there, so errors are logged and the page carries on.
  */
 export const syncPushSubscription = async (
-    apiBase: string,
     gameId: string,
     token: string,
     enabled: boolean,
@@ -184,11 +185,7 @@ export const syncPushSubscription = async (
         const reg = await serviceWorker();
         if (!reg) return;
         const post = (subscription: PushSubscriptionJSON | null) =>
-            fetch(`${apiBase}/api/game/${gameId}/push`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token, subscription }),
-            });
+            apiPostJson(`/api/game/${gameId}/push`, { token, subscription });
 
         if (!enabled || notificationPermission() !== 'granted') {
             // Only worth telling the server if this browser ever subscribed.
@@ -196,7 +193,7 @@ export const syncPushSubscription = async (
             return;
         }
 
-        const keyRes = await fetch(`${apiBase}/api/push/key`);
+        const keyRes = await apiFetch('/api/push/key');
         if (!keyRes.ok) return; // push not configured on this server
         const key = urlBase64ToBytes(((await keyRes.json()) as { key: string }).key);
 
@@ -210,7 +207,11 @@ export const syncPushSubscription = async (
         // notification. The service worker always does.
         sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
         await post(sub.toJSON());
-    } catch { /* push is an extra; page-only notifications still work */ }
+    } catch (error) {
+        // Push is an extra: page-only notifications still work, so carry on -
+        // but say so, rather than failing without a trace (Standards 5.1).
+        console.warn('Could not update the push subscription:', error);
+    }
 };
 
 /** Clears the notification once it's been answered (the tab came back). */

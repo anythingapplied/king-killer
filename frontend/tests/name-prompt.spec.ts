@@ -61,6 +61,7 @@ test('a saved name joins straight in, and Back to menu leaves without a seat', a
     await leaver.getByRole('button', { name: 'Back to menu' }).click();
     await expect(leaver.locator('button:has-text("1 Player")')).toBeVisible();
     expect(new URL(leaver.url()).searchParams.get('game')).toBeNull();
-    // Nobody new took the free seat.
-    await expect(host.locator('[data-testid="hud"]')).toContainText(/P3/);
+    // Nobody new took the free seat. Joiners get a random free seat, so the
+    // open one reads "P2" or "P3" - never assume which.
+    await expect(host.locator('[data-testid="hud"]')).toContainText(/P[23]: \d/);
 });

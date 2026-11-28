@@ -36,7 +36,13 @@
 //!   already connected kept showing "P2", "P3"... for everyone who joined
 //!   after them until the next move. `broadcast_room` is now the one place a
 //!   room is sent to its connections.
+//! * 2026-11-27: Leaderboard. Create and join link the member to a lasting
+//!   player profile (an HttpOnly cookie; see `profiles`), a finished game is
+//!   recorded, and `GET /api/leaderboard` serves the standings. CORS is gone
+//!   (the page and API share one origin), and every POST must carry
+//!   `X-Requested-With: king-killer` so other sites can't use the cookie.
 
+mod profiles;
 mod push;
 
 use axum::{
@@ -55,7 +61,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use futures::{SinkExt, StreamExt};
-use tower_http::cors::{Any, CorsLayer};
+use axum_extra::extract::cookie::CookieJar;
 use rand::seq::IndexedRandom;
 use rand::RngExt;
 
@@ -214,6 +220,12 @@ struct Room {
     /// may undo.
     #[serde(default)]
     undo: Vec<UndoPoint>,
+    /// Lasting player profile (`players.id`) by member token, so finished
+    /// games can be credited to the person (see `profiles`). Keyed by token,
+    /// like `push_subs`, because the token is the member. Never sent to
+    /// clients.
+    #[serde(default)]
+    profiles: HashMap<String, i64>,
 }
 
 /// The game as it was just before `seat` made a move that revealed nothing.
@@ -677,6 +689,7 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
                     last_starter: None,
                     push_subs: HashMap::new(),
                     undo: Vec::new(),
+                    profiles: HashMap::new(),
                 },
             );
         } else {
@@ -701,21 +714,156 @@ async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
 /// Every API and socket route, without the static-file fallback. Split out of
 /// `main` so tests can drive the real routing, extraction and status codes -
 /// not just call the handler functions - and stand the socket up on a port.
-fn api_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+/// The header every POST must carry, and its value.
+///
+/// The profile cookie is sent with any request to this site, including one a
+/// page on another site triggers. A cross-site form can't add a header, and a
+/// cross-site `fetch` that adds one needs a CORS preflight this server never
+/// grants, so requiring it stops other sites acting with a visitor's cookie
+/// (Standards 4.2).
+pub const APP_HEADER: (&str, &str) = ("x-requested-with", "king-killer");
 
+async fn require_app_header(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let carries_it = req.headers().get(APP_HEADER.0).is_some_and(|value| value == APP_HEADER.1);
+    if req.method() == axum::http::Method::POST && !carries_it {
+        return api_error(axum::http::StatusCode::FORBIDDEN, "Missing the X-Requested-With header").into_response();
+    }
+    next.run(req).await
+}
+
+/// No CORS layer: the page and the API share one origin (the API serves the
+/// page, and Vite forwards /api in development), so no other origin needs it.
+fn api_router(state: AppState) -> Router {
     Router::new()
-        .route("/api/game", post(create_game))
+        .route("/api/game", post(create_game_route))
         .route("/api/game/{id}", get(get_game))
-        .route("/api/game/{id}/join", post(join_game_seat))
+        .route("/api/game/{id}/join", post(join_game_route))
         .route("/api/game/{id}/push", post(set_push_subscription))
         .route("/api/push/key", get(push_key))
+        .route("/api/leaderboard", get(get_leaderboard))
         .route("/api/ws/{id}", get(ws_handler))
-        .layer(cors)
+        .layer(axum::middleware::from_fn(require_app_header))
         .with_state(state)
+}
+
+/// `create_game`, plus linking the creator to their lasting profile (and
+/// issuing its cookie). Kept apart so the game logic stays testable without
+/// cookies.
+async fn create_game_route(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(payload): Json<CreateGameRequest>,
+) -> Result<(CookieJar, Json<GameResponse>), ApiErrorResponse> {
+    let name = payload.player_name.clone();
+    let Json(response) = create_game(State(state.clone()), Json(payload)).await?;
+    let jar = link_profile(&state, jar, &response.id, &response.token, name.as_deref()).await;
+    Ok((jar, Json(response)))
+}
+
+/// `join_game_seat`, plus linking the joiner to their lasting profile.
+async fn join_game_route(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(payload): Json<JoinRequest>,
+) -> Result<(CookieJar, Json<JoinResponse>), ApiErrorResponse> {
+    let name = payload.name.clone();
+    let Json(response) = join_game_seat(Path(id.clone()), State(state.clone()), Json(payload)).await?;
+    let jar = link_profile(&state, jar, &id, &response.token, name.as_deref()).await;
+    Ok((jar, Json(response)))
+}
+
+/// Links a room member (by token) to the request's profile, creating the
+/// profile and its cookie if there is none.
+///
+/// A failure is logged and the game goes on: the player can still play, and
+/// only the leaderboard misses them for this game.
+async fn link_profile(state: &AppState, jar: CookieJar, room_id: &str, token: &str, name: Option<&str>) -> CookieJar {
+    match profiles::profile_for(&state.db, jar.clone(), name, new_token).await {
+        Ok((player_id, jar)) => {
+            let room = {
+                let mut rooms = state.rooms.write().unwrap();
+                rooms.get_mut(room_id).map(|room| {
+                    room.profiles.insert(token.to_string(), player_id);
+                    room.clone()
+                })
+            };
+            if let Some(room) = room {
+                persist_room(&state.db, &room).await;
+            }
+            jar
+        }
+        Err(error) => {
+            tracing::error!(room_id, "could not link a player profile: {error}");
+            jar
+        }
+    }
+}
+
+/// Links a member who joined before profiles existed, when their socket
+/// arrives with a known profile cookie. Nothing to do if they're linked, or
+/// the cookie names no profile (a socket can't set one).
+async fn link_existing_profile(state: &AppState, room_id: &str, token: &str, jar: &CookieJar) {
+    let linked = state.rooms.read().unwrap().get(room_id).is_some_and(|room| room.profiles.contains_key(token));
+    if linked {
+        return;
+    }
+    match profiles::find_profile(&state.db, jar).await {
+        Ok(Some(player_id)) => {
+            let room = {
+                let mut rooms = state.rooms.write().unwrap();
+                rooms.get_mut(room_id).map(|room| {
+                    room.profiles.insert(token.to_string(), player_id);
+                    room.clone()
+                })
+            };
+            if let Some(room) = room {
+                persist_room(&state.db, &room).await;
+            }
+        }
+        Ok(None) => {}
+        Err(error) => tracing::error!(room_id, "could not look up a player profile: {error}"),
+    }
+}
+
+/// The profile at each player seat, in seat order.
+fn seat_profiles(room: &Room) -> Vec<Option<i64>> {
+    (0..room.game.players.len())
+        .map(|seat| {
+            room.members
+                .iter()
+                .find(|m| m.seat == seat)
+                .and_then(|m| room.profiles.get(&m.token).copied())
+        })
+        .collect()
+}
+
+/// Keeps profiles in step with an action just applied: a rename reaches the
+/// sender's profile, and a game that just finished is recorded. Failures are
+/// logged, not raised - the table carries on, and only the leaderboard misses
+/// out.
+async fn sync_profiles(db: &SqlitePool, room: &Room, action: &GameAction, sender: Option<&str>, was_running: bool) {
+    if let (GameAction::SetName { name, .. }, Some(sender)) = (action, sender)
+        && let Some(&player_id) = room.profiles.get(sender)
+        && let Err(error) = profiles::rename_profile(db, player_id, name).await
+    {
+        tracing::error!(room_id = %room.id, "could not rename a player profile: {error}");
+    }
+    if was_running
+        && room.game.status != GameStatus::InProgress
+        && let Err(error) = profiles::record_result(db, &room.id, &room.game, &seat_profiles(room)).await
+    {
+        tracing::error!(room_id = %room.id, "could not record a finished game: {error}");
+    }
+}
+
+/// Standings for 1 to 4 players. Anonymous: it shows names, never profiles.
+async fn get_leaderboard(State(state): State<AppState>) -> Result<Json<Vec<profiles::Board>>, ApiErrorResponse> {
+    touch(&state.last_activity);
+    profiles::leaderboard(&state.db).await.map(Json).map_err(|error| {
+        tracing::error!("could not read the leaderboard: {error}");
+        api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "The leaderboard is unavailable right now")
+    })
 }
 
 #[tokio::main]
@@ -901,6 +1049,7 @@ async fn create_game(
         last_starter: Some(starter),
         push_subs: HashMap::new(),
         undo: Vec::new(),
+        profiles: HashMap::new(),
     };
     state.rooms.write().unwrap().insert(id.clone(), room.clone());
     persist_room(&state.db, &room).await;
@@ -1313,8 +1462,9 @@ async fn ws_handler(
     Path(id): Path<String>,
     Query(params): Query<WsParams>,
     State(state): State<AppState>,
+    jar: CookieJar,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, id, params.token, state))
+    ws.on_upgrade(move |socket| handle_socket(socket, id, params.token, jar, state))
 }
 
 /// Counts one open connection toward its member's `Room::live` for as long as
@@ -1359,12 +1509,17 @@ fn current_seat(rooms: &HashMap<String, Room>, id: &str, token: Option<&str>) ->
     rooms.get(id).and_then(|room| seat_for_token(room, token))
 }
 
-async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, state: AppState) {
+async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, jar: CookieJar, state: AppState) {
     // The seat as the connection opens: used for membership (LiveGuard) and
     // the first snapshot. Everything after re-resolves it - a re-deal moves
     // seats, and a connection that kept this one would be shown, and act as,
     // whoever inherited its old seat number.
     let seat = current_seat(&state.rooms.read().unwrap(), &id, token.as_deref());
+    // A member who joined before profiles existed is linked on their next
+    // visit, so their future games count.
+    if let (Some(_), Some(member_token)) = (seat, token.as_deref()) {
+        link_existing_profile(&state, &id, member_token, &jar).await;
+    }
     // Held until this function returns, i.e. for the life of the connection.
     // Only an authenticated member counts; an observer isn't anyone to seat.
     let _live = seat.and(token.as_deref()).map(|t| LiveGuard::new(&state.rooms, &id, t));
@@ -1467,9 +1622,13 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                     // Whose turn it was, so a turn arriving can be told apart
                     // from one that didn't move (see turn_push_target).
                     let before = (room.game.seed, room.game.current_player_index);
+                    // Whether the game was still running, so a finish is
+                    // recorded on the action that caused it and only then.
+                    let was_running = room.game.status == GameStatus::InProgress;
                     let result = apply_action(room, &action, seat);
-                    (Some(room.clone()), result, before)
+                    (Some(room.clone()), result, (before, was_running))
                 };
+                let (before, was_running) = before;
 
                 if let Err(message) = result {
                     // The player attempted something legal-looking that the
@@ -1482,6 +1641,7 @@ async fn handle_socket(socket: WebSocket, id: String, token: Option<String>, sta
                 if let Some(room) = room {
                     record_history(&state_recv.db, &id, type_label, &action, &room.game).await;
                     persist_room(&state_recv.db, &room).await;
+                    sync_profiles(&state_recv.db, &room, &action, token.as_deref(), was_running).await;
 
                     broadcast_room(&state_recv, &room);
                     touch(&state_recv.last_activity);
@@ -1538,6 +1698,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         persist_room(&pool, &room).await;
@@ -1616,6 +1777,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         persist_room(&pool, &good).await;
 
@@ -1645,6 +1807,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         let (bob, bob_player, _) = claim_seat(&mut room, Some("Bob".to_string()));
@@ -1678,6 +1841,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         // Shrink to two players. Seats are reassigned by host-then-recency, so
@@ -1710,6 +1874,7 @@ mod tests {
             last_starter,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         }
     }
 
@@ -1796,6 +1961,7 @@ mod tests {
             last_starter: Some(2), // Carol went first
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2); // Carol's own seat no longer exists
@@ -1815,6 +1981,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         deal_new_game(&mut room, 1);
         assert_eq!(room.game.current_player_index, 0, "there is only one seat to rotate to");
@@ -1913,6 +2080,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -1944,6 +2112,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         room.push_chat(1, "said by Early");
         room.push_chat(2, "said by Newest");
@@ -1980,6 +2149,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         deal_new_game(&mut room, 2);
@@ -2015,6 +2185,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         for _ in 0..4 {
             claim_seat(&mut room, None);
@@ -2039,6 +2210,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         })
         .await;
         let game = GameState::new(2);
@@ -2064,6 +2236,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         let (alice_seat, _, alice_token) = claim_seat(&mut room, Some("Alice".to_string()));
@@ -2100,6 +2273,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -2125,6 +2299,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         }
     }
 
@@ -2173,6 +2348,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         let mut issued = Vec::new();
         for name in ["a", "b", "c", "d"] {
@@ -2198,6 +2374,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         }
     }
 
@@ -2238,6 +2415,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         let (seat, is_player, _) = claim_seat(&mut room, Some("Dave".to_string()));
         assert!(is_player);
@@ -2386,6 +2564,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         room.push_chat(0, "hello");
         room
@@ -2585,6 +2764,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         }
     }
 
@@ -2682,6 +2862,7 @@ mod tests {
     fn post_json(uri: &str, body: &str) -> Request<Body> {
         Request::post(uri)
             .header("content-type", "application/json")
+            .header(APP_HEADER.0, APP_HEADER.1)
             .body(Body::from(body.to_string()))
             .unwrap()
     }
@@ -2993,6 +3174,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
 
         deal_new_game(&mut room, 3);
@@ -3022,6 +3204,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         deal_new_game(&mut room, 2);
         let seat_of = |name: &str| room.members.iter().find(|m| m.name == name).unwrap().seat;
@@ -3179,6 +3362,7 @@ mod tests {
             last_starter: None,
             push_subs: HashMap::new(),
             undo: Vec::new(),
+            profiles: HashMap::new(),
         };
         let (_, _, sub) = push::tests::subscribed_browser("https://fcm.googleapis.com/fcm/send/bob");
         room.push_subs.insert("tb".to_string(), sub);
@@ -3496,5 +3680,214 @@ mod tests {
         assert!(act(&mut room, GameAction::DiscardCards { indices: vec![0] }, 0).is_err(), "5 doesn't pay 10");
         assert_eq!(room.undo.len(), 1);
         assert_eq!(action_type(&GameAction::Undo), "undo");
+    }
+
+    // ---- Profiles, results and the leaderboard ----
+
+    /// Sends a request through the real router and returns the status, the
+    /// profile cookie it set (name=value, ready to send back) and the body.
+    async fn http_with_cookie(state: &AppState, req: Request<Body>) -> (StatusCode, Option<String>, serde_json::Value) {
+        let res = api_router(state.clone()).oneshot(req).await.unwrap();
+        let status = res.status();
+        let cookie = res
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with(profiles::PROFILE_COOKIE))
+            .map(|v| v.split(';').next().unwrap().to_string());
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, cookie, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    fn post_json_with_cookie(uri: &str, body: &str, cookie: &str) -> Request<Body> {
+        let mut req = post_json(uri, body);
+        req.headers_mut().insert("cookie", cookie.parse().unwrap());
+        req
+    }
+
+    async fn player_rows(state: &AppState) -> Vec<(i64, String)> {
+        sqlx::query_as("SELECT id, name FROM players ORDER BY id").fetch_all(&state.db).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_a_post_without_the_app_header_is_refused() {
+        let state = test_state().await;
+        let req = Request::post("/api/game")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"num_players":2}"#))
+            .unwrap();
+        let (status, body) = http(&state, req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body["message"].as_str().unwrap().contains("X-Requested-With"));
+        assert!(state.rooms.read().unwrap().is_empty(), "nothing was created");
+    }
+
+    #[tokio::test]
+    async fn http_one_profile_follows_a_browser_across_rooms() {
+        let state = test_state().await;
+        let (status, cookie, created) =
+            http_with_cookie(&state, post_json("/api/game", r#"{"num_players":2,"player_name":"Alice"}"#)).await;
+        assert_eq!(status, StatusCode::OK);
+        let cookie = cookie.expect("creating a game issues the profile cookie");
+        assert_eq!(player_rows(&state).await, vec![(1, "Alice".to_string())]);
+
+        // The same browser joins another room under a new name: same profile,
+        // renamed, and no second row for her.
+        let (_, _, other) = http_with_cookie(&state, post_json("/api/game", r#"{"num_players":2}"#)).await;
+        let other_id = other["id"].as_str().unwrap();
+        let (status, _, _) = http_with_cookie(
+            &state,
+            post_json_with_cookie(&format!("/api/game/{other_id}/join"), r#"{"name":"Ally"}"#, &cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = player_rows(&state).await;
+        assert_eq!(rows.len(), 2, "Alice, plus the cookieless creator of the second room");
+        assert_eq!(rows[0], (1, "Ally".to_string()), "the rename followed her");
+
+        let rooms = state.rooms.read().unwrap();
+        let first = &rooms[created["id"].as_str().unwrap()];
+        assert_eq!(first.profiles.get(created["token"].as_str().unwrap()), Some(&1));
+        assert_eq!(rooms[other_id].profiles.values().filter(|&&id| id == 1).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_an_unknown_profile_cookie_gets_a_fresh_profile() {
+        let state = test_state().await;
+        let forged = format!("{}=forged", profiles::PROFILE_COOKIE);
+        let (_, cookie, _) =
+            http_with_cookie(&state, post_json_with_cookie("/api/game", r#"{"num_players":1}"#, &forged)).await;
+        let cookie = cookie.expect("a new cookie replaces the unknown one");
+        assert_ne!(cookie, forged);
+        assert_eq!(player_rows(&state).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_the_secret_never_reaches_the_database() {
+        let state = test_state().await;
+        let (_, cookie, _) = http_with_cookie(&state, post_json("/api/game", r#"{"num_players":1}"#)).await;
+        let secret = cookie.unwrap().split('=').nth(1).unwrap().to_string();
+        let (hash,): (String,) = sqlx::query_as("SELECT secret_hash FROM players").fetch_one(&state.db).await.unwrap();
+        assert_ne!(hash, secret);
+        assert_eq!(hash.len(), 64, "a SHA-256 in hex");
+    }
+
+    /// A solo room whose one play wins the game: the last enemy has 1 health
+    /// left and Alice holds a 5 of Hearts. Alice is linked to a profile.
+    async fn one_play_from_winning(state: &AppState) -> (String, String) {
+        let created = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 1, player_name: Some("Alice".into()) }))
+            .await
+            .unwrap()
+            .0;
+        let (player_id, _) = profiles::profile_for(&state.db, CookieJar::default(), Some("Alice"), new_token).await.unwrap();
+        let mut rooms = state.rooms.write().unwrap();
+        let room = rooms.get_mut(&created.id).unwrap();
+        room.profiles.insert(created.token.clone(), player_id);
+        let mut enemy = Enemy::new(Card::new(Suit::Spades, Rank::King, 500));
+        enemy.current_health = 1;
+        room.game.active_enemy = Some(enemy);
+        room.game.castle_deck.clear();
+        room.game.players[0].hand = vec![Card::new(Suit::Hearts, Rank::Number(5), 501)];
+        room.game.current_player_index = 0;
+        (created.id, created.token)
+    }
+
+    #[tokio::test]
+    async fn ws_a_finished_game_is_recorded_once_and_shows_on_the_board() {
+        let state = test_state().await;
+        let (id, token) = one_play_from_winning(&state).await;
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &id, Some(&token)).await;
+        recv(&mut alice).await;
+
+        send(&mut alice, serde_json::json!({ "type": "PlayCards", "payload": { "indices": [0] } })).await;
+        let msg = recv(&mut alice).await;
+        assert_eq!(msg["payload"]["game"]["status"], "Won");
+
+        // A later action on the finished game (a chat line) doesn't record it again.
+        send(&mut alice, serde_json::json!({ "type": "SendChat", "payload": { "text": "gg" } })).await;
+        recv(&mut alice).await;
+        let (results,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM game_results").fetch_one(&state.db).await.unwrap();
+        assert_eq!(results, 1);
+
+        let (status, board) = http(&state, Request::get("/api/leaderboard").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        let solo = &board[0];
+        assert_eq!(solo["player_count"], 1);
+        assert_eq!(solo["players"][0]["names"][0], "Alice");
+        assert_eq!(solo["players"][0]["wins"], 1);
+        assert_eq!(solo["players"][0]["games"], 1);
+        assert!(solo["teams"].as_array().unwrap().is_empty(), "solo has no teams");
+        assert!(!board.to_string().contains(&token), "names only, never a token");
+    }
+
+    #[tokio::test]
+    async fn recording_the_same_finish_twice_writes_one_result() {
+        let state = test_state().await;
+        let mut game = GameState::new_with_seed(9, 2);
+        game.status = GameStatus::Lost("test".into());
+        assert!(profiles::record_result(&state.db, "ROOM01", &game, &[None, None]).await.unwrap());
+        assert!(!profiles::record_result(&state.db, "ROOM01", &game, &[None, None]).await.unwrap());
+        game.status = GameStatus::InProgress;
+        assert!(!profiles::record_result(&state.db, "ROOM02", &game, &[None, None]).await.unwrap(), "unfinished");
+    }
+
+    #[tokio::test]
+    async fn the_board_ranks_teams_by_the_same_people_whatever_their_seats() {
+        let state = test_state().await;
+        let mut ids = Vec::new();
+        for name in ["Ann", "Bo", "Cy"] {
+            ids.push(profiles::profile_for(&state.db, CookieJar::default(), Some(name), new_token).await.unwrap().0);
+        }
+        // Ann+Bo win 3 of 3 (sitting either way round); Bo+Cy win 1 of 1.
+        let tables = [[ids[0], ids[1]], [ids[1], ids[0]], [ids[0], ids[1]], [ids[1], ids[2]]];
+        for (n, seats) in tables.iter().enumerate() {
+            let mut game = GameState::new_with_seed(n as u64, 2);
+            game.status = GameStatus::Won;
+            profiles::record_result(&state.db, "ROOM", &game, &[Some(seats[0]), Some(seats[1])]).await.unwrap();
+        }
+        let boards = profiles::leaderboard(&state.db).await.unwrap();
+        let two = &boards[1];
+        assert_eq!(two.teams.len(), 2);
+        assert_eq!(two.teams[0].names, ["Ann", "Bo"], "3 of 3 outranks 1 of 1");
+        assert_eq!((two.teams[0].wins, two.teams[0].games), (3, 3));
+        assert_eq!(two.teams[1].names, ["Bo", "Cy"]);
+        assert_eq!(two.players[0].names, ["Bo"], "Bo won all four");
+        assert_eq!(two.players[0].games, 4);
+        assert!(boards[2].players.is_empty() && boards[3].players.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ws_a_rename_follows_the_profile() {
+        let state = test_state().await;
+        let (id, token) = one_play_from_winning(&state).await;
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &id, Some(&token)).await;
+        recv(&mut alice).await;
+        send(&mut alice, serde_json::json!({ "type": "SetName", "payload": { "seat": 0, "name": "Alicia" } })).await;
+        recv(&mut alice).await;
+        assert_eq!(player_rows(&state).await[0].1, "Alicia");
+    }
+
+    #[tokio::test]
+    async fn a_member_from_before_profiles_is_linked_when_their_cookie_arrives() {
+        let state = test_state().await;
+        let created = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 1, player_name: None }))
+            .await
+            .unwrap()
+            .0;
+        let (_, jar) = profiles::profile_for(&state.db, CookieJar::default(), Some("Old"), new_token).await.unwrap();
+        link_existing_profile(&state, &created.id, &created.token, &jar).await;
+        assert_eq!(state.rooms.read().unwrap()[&created.id].profiles.get(&created.token), Some(&1));
+
+        // No cookie, nothing to link - and no profile is invented.
+        let other = create_game(State(state.clone()), Json(CreateGameRequest { num_players: 1, player_name: None }))
+            .await
+            .unwrap()
+            .0;
+        link_existing_profile(&state, &other.id, &other.token, &CookieJar::default()).await;
+        assert!(state.rooms.read().unwrap()[&other.id].profiles.is_empty());
+        assert_eq!(player_rows(&state).await.len(), 1);
     }
 }

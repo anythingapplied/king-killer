@@ -4,7 +4,9 @@ A mobile-first web implementation of King Killer, a co-operative card game.
 Rust rules engine, Rust server, React frontend, SQLite persistence.
 
 No accounts, no lobbies: you create a room, share the link, and whoever opens it
-takes a seat. Anyone arriving after the seats are full watches instead.
+takes a seat. Anyone arriving after the seats are full watches instead. A
+browser keeps a lasting player profile (a cookie) so finished games count
+toward the leaderboard.
 
 ## Layout
 
@@ -27,6 +29,11 @@ cd king-killer-api && cargo run
 # Frontend (http://localhost:5173, proxies the API)
 cd frontend && npm install && npm run dev
 ```
+
+Open the game on :5173. Vite forwards `/api` (and the WebSocket) to :3000
+(`frontend/vite.config.ts`), so the page and the API share one origin in
+development as they do in production, where the API serves the built page.
+The server has no CORS, and the profile cookie only works same-origin.
 
 `scripts/dev.sh` starts both under `nix shell` and logs to `backend.log` /
 `frontend.log`. The repo targets NixOS via `devenv.nix`, but nothing outside
@@ -95,6 +102,21 @@ is what authorizes host-only actions (`NewGame`, `Reset`) and acting as yourself
 (`SetName`, `SendChat`). Everything else targets the game's own
 `current_player_index`. Don't add an action that trusts a seat sent in its
 payload, and don't cache a connection's seat.
+
+**Player profiles and the leaderboard.** The first create or join from a
+browser sets `__Host-kk-player`, an `HttpOnly`, `Secure`, `SameSite=Lax` cookie
+holding a random secret; the `players` table keeps only its SHA-256. A room maps
+each member token to a profile (`Room::profiles`), the profile takes the
+member's latest name, and a game that reaches Won or Lost is written once to
+`game_results` / `game_result_players`. `GET /api/leaderboard` ranks players
+and teams (the same people, any seats) per table size by the lower bound of
+the 95% Wilson interval. A new device or cleared site data is a new profile.
+Every POST must carry `X-Requested-With: king-killer` (`frontend/src/api.ts`
+adds it) so another site can't act with a visitor's cookie. See
+`king-killer-api/src/profiles.rs`.
+
+**Times are UTC.** SQLite's `CURRENT_TIMESTAMP` (stored rows) and the chat's
+epoch milliseconds; the page shows chat times in the viewer's local time.
 
 ## Deploying
 
