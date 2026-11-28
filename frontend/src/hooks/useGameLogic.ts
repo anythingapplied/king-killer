@@ -12,13 +12,16 @@ import {
 import { newestSeen, unreadCount } from '../chatUnread';
 import { isWatching } from '../seatState';
 import { arrivedByUndo, undoneBy } from '../undo';
+import { apiFetch, apiPostJson, readApiErrorMessage, unreachableMessage } from '../api';
 
 const BASE_TITLE = 'King Killer';
 const YOUR_TURN_TITLE = 'Your Turn! - King Killer';
 
-const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const API_BASE = import.meta.env.VITE_API_BASE ?? (IS_LOCAL ? `http://${window.location.hostname}:3000` : '');
-const WS_BASE = import.meta.env.VITE_WS_BASE ?? (IS_LOCAL ? `ws://${window.location.hostname}:3000` : '');
+// Same origin as the page by default - the API serves it in production, and
+// Vite forwards /api to the API in development (vite.config.ts) - so the
+// player-profile cookie rides along. REST calls go through api.ts; the
+// override is for a client hosted somewhere else.
+const WS_BASE = import.meta.env.VITE_WS_BASE ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
 
 // Timings for the defeat flow (in ms). The card must be shown long enough for
 // the killing blow to land - and for the cards that dealt it (the
@@ -217,7 +220,7 @@ export const useGameLogic = () => {
     if (!gameId || myPlayerId === null) return;
     let token: string | null = null;
     try { token = localStorage.getItem(`token_${gameId}`); } catch { /* no storage */ }
-    if (token) void syncPushSubscription(API_BASE, gameId, token, turnNotify);
+    if (token) void syncPushSubscription(gameId, token, turnNotify);
   }, [gameId, myPlayerId, turnNotify]);
 
   // Once the player is back on the page the notification has done its job.
@@ -611,11 +614,13 @@ export const useGameLogic = () => {
   const createGame = async (numPlayers: number) => {
     const playerName = localStorage.getItem('kingkiller_player_name') || '';
     setChat([]); setChatSeenAt(0);
-    const res = await fetch(`${API_BASE}/api/game`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ num_players: numPlayers, player_name: playerName || undefined }),
-    });
+    let res: Response;
+    try {
+      res = await apiPostJson('/api/game', { num_players: numPlayers, player_name: playerName || undefined });
+    } catch (error) {
+      alert(unreachableMessage(error));
+      return;
+    }
     if (!res.ok) {
       // Without this the app set gameId to undefined and bounced back to the
       // menu with no explanation. The server now says why (bad player count,
@@ -661,7 +666,7 @@ export const useGameLogic = () => {
     if (joiningRef.current.has(id)) return; // already claiming a seat for this game
     joiningRef.current.add(id);
     try {
-      const res = await fetch(`${API_BASE}/api/game/${id}`);
+      const res = await apiFetch(`/api/game/${id}`);
       if (!res.ok) {
         alert(await readApiErrorMessage(res, 'Game not found.'));
         return;
@@ -693,11 +698,7 @@ export const useGameLogic = () => {
         setNamePrompt({ id, push });
         return;
       }
-      const joinRes = await fetch(`${API_BASE}/api/game/${id}/join`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: playerName || undefined }),
-      });
+      const joinRes = await apiPostJson(`/api/game/${id}/join`, { name: playerName });
       if (joinRes.ok) {
         const data = await joinRes.json();
         setChat([]); setChatSeenAt(0);
@@ -712,6 +713,9 @@ export const useGameLogic = () => {
       } else {
         alert(await readApiErrorMessage(joinRes, 'Could not join the game. Please try again.'));
       }
+    } catch (error) {
+      // No answer at all (offline, or the time limit in api.ts).
+      alert(unreachableMessage(error));
     } finally {
       joiningRef.current.delete(id);
     }
@@ -735,7 +739,11 @@ export const useGameLogic = () => {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const gameParam = params.get('game')?.toUpperCase();
-    if (gameParam) joinGame(gameParam);
+    // Joining from the page's own URL on load. joinGame only sets state after
+    // its first network call returns, never synchronously in this effect,
+    // which the compiler can't see through the async function.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (gameParam) void joinGame(gameParam);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -767,19 +775,6 @@ export const useGameLogic = () => {
     if (!trimmed) return;
     localStorage.setItem('kingkiller_player_name', trimmed);
     if (myPlayerId !== null) sendAction({ type: 'SetName', payload: { seat: myPlayerId, name: trimmed } });
-  };
-
-  /** Reads the `{ message }` body `ApiError` sends; falls back for anything
-   *  that isn't shaped that way - an older server, a proxy's own error page,
-   *  or a response with no body at all. */
-  const readApiErrorMessage = async (res: Response, fallback: string): Promise<string> => {
-    try {
-      const body = await res.json();
-      if (body && typeof body.message === 'string' && body.message) return body.message;
-    } catch {
-      // Not JSON, or no body - fall through.
-    }
-    return fallback;
   };
 
   const sendChat = (text: string) => {

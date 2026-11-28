@@ -23,6 +23,8 @@ sha2 = "0.11.0"
 aes-gcm = "0.11.1"
 base64 = "0.23.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+axum-extra = { version = "=0.12.6", features = ["cookie"] }
+time = "=0.3.55"
 
 [dev-dependencies]
 tokio-tungstenite = "0.30.0"
