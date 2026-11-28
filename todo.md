@@ -15,22 +15,24 @@ open are now closed, and a couple that read as closed turned out to be partial.
       only Health/Attack show. The HUD (~230px with the tier strip, solo
       Jesters and roster rows) and the Health/Attack row take the height the
       card needs.
-- [ ] **Decide: sign-in** (Standards 4.2). The standard wants every endpoint
-      behind a sign-in through an identity provider; the brief (`AGENT.md`)
-      says no logins for now. Either record an approved deviation (an
-      anonymous public game) in the README, or add sign-in - which would also
-      replace the cookie profile as the leaderboard identity.
-- [ ] **Decide: where seat tokens live** (Standards 4.2; the web checker's
-      two `TokenInStorage` errors). They're in `localStorage`, readable by any
-      script on the page. Either move them into an `HttpOnly` cookie per room
-      (as the profile already is), or record a deviation: a token holds one
-      game seat and no personal data.
-- [ ] **Name the incident contacts** (Standards 4.15) in the README's
-      "Security and data" section: who to tell about a suspected leak.
-- [ ] **How long player profiles and results are kept** (Standards 4.7).
-      Names live in `players` and finished games in `game_results`, with no
-      deletion yet. Decide a retention period (or write down "kept for the
-      leaderboard's life") and, if one, a job that removes older rows.
+- [ ] **A light, optional way to keep your profile on another device.**
+      Anonymous play is an approved deviation (README); any sign-in must stay
+      optional and simple. Proposed, awaiting OK: a "link another device"
+      button shows a short one-time code (about 10 minutes); typing it on the
+      other device attaches it to the same profile. No passwords (ruled out:
+      hashing, lockouts, resets and reuse make them the opposite of simple),
+      no e-mail, no outside account.
+- [ ] **Take seat tokens out of the browser** (Standards 4.2; the web
+      checker's two `TokenInStorage` errors). Recommended, awaiting OK: the
+      server finds a player's seat from their `HttpOnly` profile cookie, so the
+      page holds no secret at all, rather than one cookie per room (which
+      would pile up a cookie for every game joined). Existing players move
+      over on their next connection.
+- [ ] **How to reach Dan** about a suspected leak (Standards 4.15): add it to
+      the README's "Security and data" section.
+- [ ] **Android app** - backburnered (2026-11-27). Options when it comes
+      back: the website wrapped for the Play Store (Trusted Web Activity), or a
+      Capacitor app; and whose Play Store account publishes it.
 - [ ] **Confirm the turn chime on the reporter's own setup** (Linux, Brave).
       Nothing host-specific was found; the silent case was a page that hadn't
       been interacted with since it loaded, which now shows a "tap to turn on
@@ -252,6 +254,12 @@ open are now closed, and a couple that read as closed turned out to be partial.
       Narrower screens keep the full-screen overlays. `panels.spec.ts` checks
       the docked panels clear the board, a card can still be selected, and
       chat sends from the docked panel.
+- [x] **Data is kept for 3 years after last use** (Standards 4.7, decided
+      2026-11-27). Rooms (with chat, names and push subscriptions), history,
+      finished games and profiles past it are removed at startup and daily
+      (`retention.rs`); profiles record `last_seen_at`. Anonymous play is
+      recorded as an approved deviation from 4.2 in the README, and Dan is
+      the incident contact.
 - [x] **Standards review fixes** (2026-11-27). Failed saves are logged, not
       discarded; security headers (CSP, HSTS, nosniff, Referrer-Policy) on
       every response; `GET /api/health` with the deployed commit; rate limits
