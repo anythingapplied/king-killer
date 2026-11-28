@@ -90,10 +90,17 @@ export const test = base.extend<{ api: ApiServer }>({
         // Playwright requires the fixture's first argument to be a destructuring
         // pattern. The second is Playwright's conventional `use`, renamed:
         // react-hooks lint mistakes a `use(...)` call for React's `use` hook.
-        // eslint-disable-next-line no-empty-pattern
-        async ({}, provide, testInfo) => {
+        async ({ browser }, provide, testInfo) => {
             testInfo.skip(!existsSync(API_BINARY), `API binary not built: ${API_BINARY}. Run: cargo build -p king-killer-api`);
             testInfo.skip(await portIsInUse(), `Port ${API_PORT} is already in use; stop the API and let the tests own it`);
+
+            // Extra players' windows (browser.newContext() in a spec) outlive
+            // their test: the browser is shared by the worker. Left open, their
+            // pages keep reconnecting - into the next test's fresh server, with
+            // tokens and rooms it has never heard of - which made later specs
+            // flaky. Each test's own context is closed by Playwright, so
+            // anything still open now is a leftover.
+            await Promise.all(browser.contexts().map((leftover) => leftover.close()));
 
             const dataDir = mkdtempSync(path.join(tmpdir(), 'king-killer-e2e-'));
             let child = startApi(dataDir);
