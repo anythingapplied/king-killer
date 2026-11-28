@@ -41,7 +41,14 @@
 //!   recorded, and `GET /api/leaderboard` serves the standings. CORS is gone
 //!   (the page and API share one origin), and every POST must carry
 //!   `X-Requested-With: king-killer` so other sites can't use the cookie.
+//! * 2026-11-27: Standards fixes. A failed save or history write is logged
+//!   (they were discarded silently). Every response, the page included,
+//!   carries a Content-Security-Policy, HSTS, nosniff and Referrer-Policy;
+//!   `GET /api/health` checks the database and reports the commit; creating
+//!   and joining rooms are rate-limited per client (`limits`); and WebSocket
+//!   messages are capped at 16 KiB (the default was 64 MiB).
 
+mod limits;
 mod profiles;
 mod push;
 
@@ -74,6 +81,8 @@ struct AppState {
     /// Web Push sender; `None` when VAPID keys aren't configured, in which
     /// case push is simply off. See `push.rs`.
     push: Option<Arc<push::Vapid>>,
+    /// Rate limits on the endpoints that need no seat. See `limits.rs`.
+    limits: Arc<limits::Limits>,
 }
 
 /// A person attached to a room. Seats below the current game's player count
@@ -596,22 +605,32 @@ fn occupied_seats_json(room: &Room) -> String {
     serde_json::to_string(&occupied).unwrap()
 }
 
+/// Saves the room. A failure is logged, not raised: the change has already
+/// been applied in memory and sent to the table, so there is nothing to undo,
+/// but a room that didn't save is lost when the server next sleeps - which is
+/// exactly what an error in the log has to tell someone (Standards 1.1, 5.1).
+/// It used to be discarded silently.
 async fn persist_room(db: &SqlitePool, room: &Room) {
     let room_json = serde_json::to_string(room).unwrap();
-    let _ = sqlx::query(
+    let saved = sqlx::query(
         "INSERT INTO games (id, state_json, occupied_seats, updated_at) VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \
          ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, occupied_seats = excluded.occupied_seats, updated_at = CURRENT_TIMESTAMP",
     )
     .bind(&room.id)
     .bind(&room_json)
-    .bind(&occupied_seats_json(room))
+    .bind(occupied_seats_json(room))
     .execute(db)
     .await;
+    if let Err(error) = saved {
+        tracing::error!(room_id = %room.id, "could not save the room; it will be lost if the server stops: {error}");
+    }
 }
 
+/// Appends an action to `game_history`. Logged on failure, like
+/// `persist_room`: the game goes on, but its history has a gap.
 async fn record_history(db: &SqlitePool, game_id: &str, action_type: &str, action: &GameAction, game: &GameState) {
     let action_json = serde_json::to_string(action).unwrap();
-    let _ = sqlx::query(
+    let recorded = sqlx::query(
         "INSERT INTO game_history (game_id, action_type, action_json, seed, version) VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(game_id)
@@ -621,6 +640,9 @@ async fn record_history(db: &SqlitePool, game_id: &str, action_type: &str, actio
     .bind(game.version as i64)
     .execute(db)
     .await;
+    if let Err(error) = recorded {
+        tracing::error!(room_id = %game_id, action_type, "could not record an action in game_history: {error}");
+    }
 }
 
 /// Loads every persisted room at startup.
@@ -731,10 +753,118 @@ async fn require_app_header(req: axum::extract::Request, next: axum::middleware:
     next.run(req).await
 }
 
+/// The whole site: the API, the built page for every other path, and the
+/// security headers on every response, the page included (Standards 4.10).
+fn app_router(state: AppState, dist_dir: &str) -> Router {
+    api_router(state)
+        .fallback_service(ServeDir::new(dist_dir).not_found_service(ServeFile::new(format!("{dist_dir}/index.html"))))
+        .layer(axum::middleware::from_fn(security_headers))
+}
+
+/// What the page may load. Everything comes from this origin: the built
+/// scripts and styles (no inline ones - a Vite build needs none), the card
+/// images (plus `data:` for the small inline ones), the manifest and service
+/// worker, and the API and its socket. `connect-src` names the socket's
+/// `ws:`/`wss:` origin explicitly, since older Safari doesn't count it as
+/// `'self'`. Nothing may frame the page.
+fn content_security_policy(host: &str) -> String {
+    format!(
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; \
+         connect-src 'self' wss://{host} ws://{host}; manifest-src 'self'; worker-src 'self'; \
+         object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
+}
+
+async fn security_headers(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::http::{HeaderValue, header};
+    // Only for the CSP's socket origin. A made-up Host can only loosen the
+    // policy sent back to whoever made it up.
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']')))
+        .unwrap_or("localhost")
+        .to_string();
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    if let Ok(csp) = HeaderValue::from_str(&content_security_policy(&host)) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, csp);
+    }
+    // A year; browsers ignore it over plain http (local development).
+    headers.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("strict-origin-when-cross-origin"));
+    res
+}
+
+/// Who a request is from, for rate limits. Fly's proxy sets `Fly-Client-IP`
+/// (and overwrites any a client sends); without it - local development, the
+/// tests - everyone shares one bucket.
+fn client_key(req: &axum::extract::Request) -> String {
+    req.headers()
+        .get("fly-client-ip")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Rate limits for creating and joining rooms (`limits.rs`): 429 with
+/// `Retry-After` past the limit.
+async fn rate_limit(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path();
+    let limiter = match (req.method() == axum::http::Method::POST, path) {
+        (true, "/api/game") => Some(&state.limits.create_room),
+        (true, p) if p.starts_with("/api/game/") && p.ends_with("/join") => Some(&state.limits.join_room),
+        _ => None,
+    };
+    if let Some(limiter) = limiter
+        && let Err(wait) = limiter.check(&client_key(&req), Instant::now())
+    {
+        let mut res = api_error(axum::http::StatusCode::TOO_MANY_REQUESTS, "Too many requests - please wait a moment and try again")
+            .into_response();
+        res.headers_mut().insert(axum::http::header::RETRY_AFTER, limits::retry_after_seconds(wait).into());
+        return res;
+    }
+    next.run(req).await
+}
+
+#[derive(Serialize, Debug)]
+struct Health {
+    status: &'static str,
+    /// The commit this build came from (`GIT_COMMIT`, set at build time), so
+    /// a deployment can be checked against what was meant to ship.
+    commit: String,
+}
+
+/// `GET /api/health`: needs no seat and touches nothing slow - just a trivial
+/// query to prove the database answers (Standards 5.3, 16.2). Deliberately
+/// does not count as activity, or the platform's checks would keep the server
+/// from ever going idle.
+async fn health(State(state): State<AppState>) -> Result<Json<Health>, ApiErrorResponse> {
+    let commit = std::env::var("GIT_COMMIT").unwrap_or_else(|_| "unknown".to_string());
+    match tokio::time::timeout(Duration::from_secs(2), sqlx::query("SELECT 1").execute(&state.db)).await {
+        Ok(Ok(_)) => Ok(Json(Health { status: "ok", commit })),
+        Ok(Err(error)) => {
+            tracing::error!("health check: the database failed: {error}");
+            Err(api_error(axum::http::StatusCode::SERVICE_UNAVAILABLE, "The database is not answering"))
+        }
+        Err(_) => {
+            tracing::error!("health check: the database took over 2 seconds");
+            Err(api_error(axum::http::StatusCode::SERVICE_UNAVAILABLE, "The database is not answering"))
+        }
+    }
+}
+
 /// No CORS layer: the page and the API share one origin (the API serves the
 /// page, and Vite forwards /api in development), so no other origin needs it.
 fn api_router(state: AppState) -> Router {
     Router::new()
+        .route("/api/health", get(health))
         .route("/api/game", post(create_game_route))
         .route("/api/game/{id}", get(get_game))
         .route("/api/game/{id}/join", post(join_game_route))
@@ -742,6 +872,7 @@ fn api_router(state: AppState) -> Router {
         .route("/api/push/key", get(push_key))
         .route("/api/leaderboard", get(get_leaderboard))
         .route("/api/ws/{id}", get(ws_handler))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit))
         .layer(axum::middleware::from_fn(require_app_header))
         .with_state(state)
 }
@@ -899,6 +1030,7 @@ async fn main() {
         last_activity: Arc::new(RwLock::new(Instant::now())),
         db: pool,
         push: push::Vapid::from_env().map(Arc::new),
+        limits: Arc::new(limits::Limits::default()),
     };
     if state.push.is_none() {
         tracing::info!("VAPID keys not configured; turn push notifications are off");
@@ -919,10 +1051,7 @@ async fn main() {
     });
 
     let dist_dir = std::env::var("DIST_DIR").unwrap_or_else(|_| "frontend/dist".to_string());
-    let app = api_router(state).fallback_service(
-        ServeDir::new(&dist_dir)
-            .not_found_service(ServeFile::new(format!("{dist_dir}/index.html"))),
-    );
+    let app = app_router(state, &dist_dir);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await.unwrap();
@@ -1457,6 +1586,9 @@ fn undo_last_move(room: &mut Room, seat: Option<usize>) -> Result<(), String> {
     Ok(())
 }
 
+/// The largest WebSocket message the server reads.
+const WS_MAX_MESSAGE_BYTES: usize = 16 * 1024;
+
 async fn ws_handler(
     ws: WebSocketUpgrade,
     Path(id): Path<String>,
@@ -1464,7 +1596,12 @@ async fn ws_handler(
     State(state): State<AppState>,
     jar: CookieJar,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, id, params.token, jar, state))
+    // Every action is a few hundred bytes and chat stops at 300 characters, so
+    // nothing legitimate comes near this; the library's default is 64 MiB
+    // (Standards 1.8).
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_socket(socket, id, params.token, jar, state))
 }
 
 /// Counts one open connection toward its member's `Room::live` for as long as
@@ -1997,6 +2134,7 @@ mod tests {
             last_activity: Arc::new(RwLock::new(Instant::now())),
             db,
             push: None,
+            limits: Arc::new(limits::Limits::default()),
         }
     }
 
@@ -3889,5 +4027,112 @@ mod tests {
         link_existing_profile(&state, &other.id, &other.token, &CookieJar::default()).await;
         assert!(state.rooms.read().unwrap()[&other.id].profiles.is_empty());
         assert_eq!(player_rows(&state).await.len(), 1);
+    }
+
+    // ---- Hardening: headers, health, rate limits, message size ----
+
+    async fn raw(router: Router, req: Request<Body>) -> axum::response::Response {
+        router.oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_response_carries_the_security_headers_the_page_included() {
+        let state = test_state().await;
+        let dist = std::env::temp_dir().join(format!("kk-dist-{}", new_token()));
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("index.html"), "<!doctype html><title>t</title>").unwrap();
+        let app = app_router(state, dist.to_str().unwrap());
+
+        for path in ["/", "/some/client/route", "/api/leaderboard"] {
+            let res = raw(app.clone(), Request::get(path).header("host", "kk.example").body(Body::empty()).unwrap()).await;
+            let h = res.headers();
+            let csp = h["content-security-policy"].to_str().unwrap();
+            assert!(csp.contains("script-src 'self'") && !csp.contains("unsafe-inline"), "{path}: {csp}");
+            assert!(csp.contains("frame-ancestors 'none'"), "{path}");
+            assert!(csp.contains("wss://kk.example"), "{path}: the socket's origin is allowed");
+            assert_eq!(h["strict-transport-security"], "max-age=31536000", "{path}");
+            assert_eq!(h["x-content-type-options"], "nosniff", "{path}");
+            assert_eq!(h["referrer-policy"], "strict-origin-when-cross-origin", "{path}");
+        }
+        std::fs::remove_dir_all(&dist).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_strange_host_header_cannot_inject_into_the_policy() {
+        let state = test_state().await;
+        let res = raw(
+            app_router(state, "no-such-dist"),
+            Request::get("/api/leaderboard").header("host", "evil.com; script-src *").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let csp = res.headers()["content-security-policy"].to_str().unwrap();
+        assert!(!csp.contains("evil.com") && !csp.contains("script-src *"), "{csp}");
+    }
+
+    #[tokio::test]
+    async fn health_reports_ok_without_counting_as_activity() {
+        let state = test_state().await;
+        let before = *state.last_activity.read().unwrap();
+        let (status, body) = http(&state, Request::get("/api/health").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert!(body["commit"].is_string());
+        assert_eq!(*state.last_activity.read().unwrap(), before, "health checks must not keep the server awake");
+    }
+
+    #[tokio::test]
+    async fn health_fails_when_the_database_does() {
+        let state = test_state().await;
+        state.db.close().await;
+        let (status, body) = http(&state, Request::get("/api/health").body(Body::empty()).unwrap()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["message"], "The database is not answering");
+    }
+
+    #[tokio::test]
+    async fn creating_rooms_too_fast_gets_429_with_retry_after() {
+        let state = test_state().await;
+        let create = || {
+            let mut req = post_json("/api/game", r#"{"num_players":1}"#);
+            req.headers_mut().insert("fly-client-ip", "203.0.113.7".parse().unwrap());
+            req
+        };
+        for _ in 0..10 {
+            assert_eq!(raw(api_router(state.clone()), create()).await.status(), StatusCode::OK);
+        }
+        let refused = raw(api_router(state.clone()), create()).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        let wait: u64 = refused.headers()["retry-after"].to_str().unwrap().parse().unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
+        assert_eq!(state.rooms.read().unwrap().len(), 10, "the refused request created nothing");
+
+        // Another address isn't held back by the first.
+        let mut other = post_json("/api/game", r#"{"num_players":1}"#);
+        other.headers_mut().insert("fly-client-ip", "198.51.100.9".parse().unwrap());
+        assert_eq!(raw(api_router(state.clone()), other).await.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ws_an_oversized_message_closes_the_connection_unapplied() {
+        let state = test_state().await;
+        let (id, alice_token, _) = two_seat_room(&state).await;
+        let addr = serve(&state).await;
+        let mut alice = connect(addr, &id, Some(&alice_token)).await;
+        recv(&mut alice).await;
+
+        let huge = "x".repeat(WS_MAX_MESSAGE_BYTES + 1);
+        let _ = alice.send(WsMessage::Text(serde_json::json!({ "type": "SendChat", "payload": { "text": huge } }).to_string().into())).await;
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match alice.next().await {
+                    None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => return true,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(closed, "the server drops a connection that sends an oversized message");
+        assert!(state.rooms.read().unwrap()[&id].chat.iter().all(|m| m.text.len() < WS_MAX_MESSAGE_BYTES));
     }
 }

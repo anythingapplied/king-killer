@@ -1,0 +1,26 @@
+# Dependency updates (Standards 4.13). Versions are pinned exactly in
+# Cargo.toml and package.json, so nothing moves on its own: Dependabot opens a
+# pull request for each update, and the tests decide whether it merges.
+# Security updates arrive the same way, as soon as an advisory is published.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
