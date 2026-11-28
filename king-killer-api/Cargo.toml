@@ -11,7 +11,7 @@ tokio = { version = "=1.54.1", features = ["full"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
 sqlx = { version = "=0.9.1", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
-tower-http = { version = "=0.6.10", features = ["fs"] }
+tower-http = { version = "=0.7.1", features = ["fs"] }
 king-killer-core = { path = "../king-killer-core" }
 tracing = "=0.1.44"
 tracing-subscriber = "=0.3.23"
