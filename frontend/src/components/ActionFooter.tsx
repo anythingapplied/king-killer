@@ -27,7 +27,8 @@ const ActionFooter: React.FC<ActionFooterProps> = ({
 }) => {
     const isDiscarding = damageNeeded > 0;
     const showWarning = isImmuneWarning && !isDiscarding;
-    const btn = "t-label font-black py-2.5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-xl transition-all active:translate-y-1 border-b-4 uppercase tracking-widest";
+    // .action-btn tightens these on a very short screen (index.css).
+    const btn = "action-btn t-label font-black py-2.5 sm:py-3.5 rounded-xl sm:rounded-2xl shadow-xl transition-all active:translate-y-1 border-b-4 uppercase tracking-widest";
 
     if (phase === 'AwaitingNextPlayer') {
         return (

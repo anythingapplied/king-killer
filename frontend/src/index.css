@@ -27,8 +27,10 @@ button:not(:disabled) {
   /* Width budget for one hand card, so a card is never taller than the row. */
   --hand-card-max-w: calc(var(--hand-h) * 5 / 7);
 
-  /* Thumbnails (castle tier strip, last play). */
-  --thumb-w: clamp(1.6rem, 4.4vw, 3.1rem);
+  /* Thumbnails (castle tier strip, last play). Bounded by height as well as
+     width: on a short laptop the width-only size made the HUD's tier strip
+     tall enough to squeeze the enemy card below the size of a hand card. */
+  --thumb-w: clamp(1.6rem, min(4.4vw, 5.5dvh), 3.1rem);
 
   /* Fluid type ramp. */
   /* Floors raised deliberately: nothing in the UI renders below 10px any more,
@@ -124,6 +126,66 @@ body {
 
 .thumb-card {
   width: var(--thumb-w);
+}
+
+/* ---- Enemy -------------------------------------------------------------- */
+
+/* Short, wide screens - a 720-768px laptop, a phone held sideways - are short
+   of height, not width, and the Health/Attack row under the enemy card was
+   taking the height the card needed: at 1280x720 the card came out smaller
+   than a hand card, and sideways on a phone it vanished. There, the stats sit
+   beside the card instead, and the card gets the whole height. */
+@media (max-height: 820px) and (min-aspect-ratio: 4/3) {
+  .enemy-area {
+    flex-direction: row;
+    /* Stretch, so the card's box takes the row's full height and the card
+       (h-full) sizes to it - centred, it fell back to the image's own size. */
+    align-items: stretch;
+    padding-top: 0.25rem;
+  }
+  .enemy-stats {
+    align-self: center;
+  }
+  /* The card's box shrinks to the card, so the stats sit beside it rather
+     than at the far edge of the row. */
+  .enemy-card-box {
+    flex: 0 1 auto;
+    width: auto;
+  }
+  .enemy-area {
+    justify-content: center;
+    gap: 1rem;
+  }
+  .enemy-stats {
+    flex-direction: column;
+    width: auto;
+    justify-content: center;
+  }
+}
+
+/* Very short screens (a phone held sideways, ~375-430px tall) had no height
+   left for the board at all: the HUD, the hand and the footer took all of it.
+   There the HUD's rows sit side by side, and the hand and footer tighten. */
+@media (max-height: 500px) and (min-aspect-ratio: 4/3) {
+  :root { --hand-h: 3.75rem; }
+  .hud-body {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .hud-body > * {
+    margin: 0;
+    border-top: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .hud-piles { flex: 1 1 auto; }
+  /* The two stat boxes side by side next to the card: stacked, they were
+     taller than the board row and got clipped. */
+  .enemy-stats { flex-direction: row; }
+  .enemy-area { padding-top: 0; }
+  .arena-row { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  .action-btn { padding-top: 0.375rem; padding-bottom: 0.375rem; }
 }
 
 /* A solo hand is 8 cards wide. On a narrow phone the gaps are what's expensive,
