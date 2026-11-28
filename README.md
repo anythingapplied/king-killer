@@ -127,11 +127,18 @@ HTTPS only (`force_https` on Fly), and the volume and its backups are for the
 people who run the server. Nothing else about players is collected: no
 e-mail, no accounts, no addresses in the database.
 
-**How long it's kept.** Not yet decided - rooms, chat, profiles and results
-currently stay until deleted by hand. Open in `todo.md`.
+**How long it's kept: 3 years after last use.** A room (with its chat,
+members' names and push subscriptions) goes 3 years after its last action, an
+action-history row 3 years after it was written, a finished game 3 years after
+it ended, and a player profile 3 years after it was last used, once no kept
+result needs it. The server sweeps at startup and daily
+(`king-killer-api/src/retention.rs`), so the leaderboard covers the last three
+years. Decided by Luke Alfuth, 2026-11-27.
 
-**If something goes wrong** (4.15). Report a suspected leak or breach to the
-repository owner straight away. Contacts: not yet named - open in `todo.md`.
+**If something goes wrong** (4.15). Tell **Dan** straight away about a
+suspected leak, a breach or exposed data - before investigating. How to reach
+him is still to be added (`todo.md`). Contain it (rotate the secret, take the
+app down if needed) but keep the logs and data that show what happened.
 
 **Threat model** (4.1, STRIDE), and how each is handled:
 
@@ -144,9 +151,15 @@ repository owner straight away. Contacts: not yet named - open in `todo.md`.
 | Flooding rooms or seats (denial of service) | Per-client rate limits on create and join; 16 KiB WebSocket messages; capped chat and logs. |
 | Reading the database (disclosure) | Profile cookies are stored only as SHA-256 hashes; seat tokens never leave the server except in the one response that issues them. |
 
-Not covered yet: there is no sign-in (by design, see `AGENT.md`), and seat
+Not covered yet: there is no sign-in (an approved deviation, below), and seat
 tokens are kept in the browser's `localStorage`, where any script on the page
-could read them. Both are open decisions in `todo.md`.
+could read them - an open decision in `todo.md`.
+
+### Approved deviations
+
+| Rule | What is done instead | Why | Approved |
+|---|---|---|---|
+| 4.2 - every endpoint behind sign-in through an identity provider | Anonymous play: no sign-in. A seat is proven by its seat token, a person by the `HttpOnly` profile cookie. | The game is a casual, link-shared table with no accounts by design (`AGENT.md`); nothing it holds needs more than that. Any sign-in added later must stay optional and light. | Luke Alfuth, 2026-11-27 |
 
 ## Deploying
 

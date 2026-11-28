@@ -32,6 +32,9 @@
 //!
 //! * 2026-11-27: Created, for the leaderboard: profiles, recorded results,
 //!   and Wilson-ranked standings per player count, for players and teams.
+//! * 2026-11-28: Profiles record when they were last used (`last_seen_at`),
+//!   for the 3-year retention sweep (`retention.rs`), and a result skips a
+//!   profile the sweep has removed.
 
 use std::collections::HashMap;
 
@@ -96,18 +99,30 @@ pub async fn profile_for(
         if let Some(name) = name {
             rename_profile(db, id, name).await?;
         }
+        mark_seen(db, &[id]).await?;
         // Re-sent so the 400 days count from the latest visit.
         let secret = jar.get(PROFILE_COOKIE).map(|c| c.value().to_string()).unwrap_or_default();
         return Ok((id, jar.add(profile_cookie(secret))));
     }
 
     let secret = new_secret();
-    let (id,): (i64,) = sqlx::query_as("INSERT INTO players (secret_hash, name) VALUES (?1, ?2) RETURNING id")
+    let (id,): (i64,) = sqlx::query_as(
+        "INSERT INTO players (secret_hash, name, last_seen_at) VALUES (?1, ?2, CURRENT_TIMESTAMP) RETURNING id",
+    )
         .bind(hash_secret(&secret))
         .bind(name.unwrap_or(""))
         .fetch_one(db)
         .await?;
     Ok((id, jar.add(profile_cookie(secret))))
+}
+
+/// Records that these profiles were just used, which is what the retention
+/// period counts from (`retention.rs`).
+pub async fn mark_seen(db: &SqlitePool, ids: &[i64]) -> Result<(), sqlx::Error> {
+    for id in ids {
+        sqlx::query("UPDATE players SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?1").bind(id).execute(db).await?;
+    }
+    Ok(())
 }
 
 /// Gives a profile its player's latest name.
@@ -166,16 +181,24 @@ pub async fn record_result(
     let result_id = inserted.last_insert_rowid();
     for (seat, player) in seats.iter().enumerate() {
         if let Some(player_id) = player {
-            // OR IGNORE: a profile holding two seats is credited once.
-            sqlx::query("INSERT OR IGNORE INTO game_result_players (result_id, player_id, seat) VALUES (?1, ?2, ?3)")
-                .bind(result_id)
-                .bind(player_id)
-                .bind(seat as i64)
-                .execute(&mut *tx)
-                .await?;
+            // OR IGNORE: a profile holding two seats is credited once. The
+            // EXISTS skips a profile the retention sweep has removed while a
+            // room still pointed at it.
+            sqlx::query(
+                "INSERT OR IGNORE INTO game_result_players (result_id, player_id, seat) \
+                 SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM players WHERE id = ?2)",
+            )
+            .bind(result_id)
+            .bind(player_id)
+            .bind(seat as i64)
+            .execute(&mut *tx)
+            .await?;
         }
     }
     tx.commit().await?;
+    // Finishing a game counts as using the profile.
+    let players: Vec<i64> = seats.iter().flatten().copied().collect();
+    mark_seen(db, &players).await?;
     Ok(true)
 }
 

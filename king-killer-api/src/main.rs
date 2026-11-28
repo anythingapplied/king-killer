@@ -47,10 +47,14 @@
 //!   `GET /api/health` checks the database and reports the commit; creating
 //!   and joining rooms are rate-limited per client (`limits`); and WebSocket
 //!   messages are capped at 16 KiB (the default was 64 MiB).
+//! * 2026-11-28: Data older than 3 years is removed at startup and daily
+//!   (`retention`). Anonymous play is a recorded, approved deviation from
+//!   Standards 4.2 - see the README's "Approved deviations".
 
 mod limits;
 mod profiles;
 mod push;
+mod retention;
 
 use axum::{
     extract::Query,
@@ -659,6 +663,33 @@ async fn record_history(db: &SqlitePool, game_id: &str, action_type: &str, actio
 /// failure mode: adding a required (non-`serde(default)`) field to `Room`
 /// makes every stored room fail this parse, fall through the legacy branch,
 /// and vanish on the next boot with nothing in the logs.
+/// Runs the retention sweep (`retention.rs`) and logs what it removed. With
+/// `state`, rooms it deleted are dropped from memory as well. A failure is
+/// logged and the server carries on: nothing is lost by sweeping later.
+async fn run_retention_sweep(db: &SqlitePool, state: Option<&AppState>) {
+    match retention::sweep(db, "now").await {
+        Ok(swept) => {
+            if let Some(state) = state {
+                let mut rooms = state.rooms.write().unwrap();
+                let mut broadcasts = state.broadcasts.write().unwrap();
+                for id in &swept.rooms {
+                    rooms.remove(id);
+                    broadcasts.remove(id);
+                }
+            }
+            tracing::info!(
+                rooms = swept.rooms.len(),
+                history = swept.history,
+                results = swept.results,
+                players = swept.players,
+                "retention sweep: removed data older than {}",
+                retention::RETENTION
+            );
+        }
+        Err(error) => tracing::error!("retention sweep failed; it will run again at the next start or in a day: {error}"),
+    }
+}
+
 async fn load_rooms(db: &SqlitePool) -> HashMap<String, Room> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, state_json, occupied_seats FROM games")
@@ -1015,6 +1046,8 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
+    // Before loading, so a room past the retention period is never served.
+    run_retention_sweep(&pool, None).await;
     let loaded_rooms = load_rooms(&pool).await;
     tracing::info!("loaded {} rooms from database", loaded_rooms.len());
 
@@ -1047,6 +1080,18 @@ async fn main() {
                 tracing::info!("idle for {:.0?}, shutting down", timeout);
                 std::process::exit(0);
             }
+        }
+    });
+
+    // The startup sweep covers a server that sleeps between games; this one
+    // covers a server busy enough never to restart.
+    let retention_state = state.clone();
+    tokio::spawn(async move {
+        let mut daily = tokio::time::interval(retention::SWEEP_INTERVAL);
+        daily.tick().await; // the first tick is immediate; startup already swept
+        loop {
+            daily.tick().await;
+            run_retention_sweep(&retention_state.db, Some(&retention_state)).await;
         }
     });
 
