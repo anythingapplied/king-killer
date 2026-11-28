@@ -25,5 +25,10 @@ COPY --from=backend /app/target/release/king-killer-api /app/king-killer-api
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 ENV PORT=3000
 ENV DATA_DIR=/data
+# The commit this image was built from, reported by GET /api/health so a
+# deployment can be checked against what was meant to ship. Pass it in:
+#   fly deploy --build-arg GIT_COMMIT=$(git rev-parse HEAD)
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
 EXPOSE 3000
 CMD ["/app/king-killer-api"]
