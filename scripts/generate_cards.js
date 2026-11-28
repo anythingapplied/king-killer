@@ -1,11 +1,28 @@
+#!/usr/bin/env node
+// generate_cards.js - writes the 52 card faces and the Joker as SVG files.
+//
+//   node scripts/generate_cards.js              # into frontend/public/cards
+//   node scripts/generate_cards.js <folder>     # somewhere else, e.g. to compare
+//
+// Requires Node.js (the version the frontend uses); no packages. Overwrites
+// files of the same name, so running it twice gives the same 53 files. After
+// changing the art, bump the `?v=` in frontend/src/Card.tsx so browsers don't
+// keep the old images.
+//
+// Changes:
+// - 2026-11-27: The output folder was a hard-coded path on one developer's
+//   machine (/home/dan/...), so the script only worked there. It now defaults
+//   to the repo's own card folder and takes another as an argument. Removed
+//   generate_cards.py, a second copy producing the same cards.
+
 const fs = require('fs');
 const path = require('path');
 
-const outputDir = '/home/dan/Projects/kingkiller/frontend/public/cards/';
+const outputDir = process.argv[2]
+    ? path.resolve(process.argv[2])
+    : path.join(__dirname, '..', 'frontend', 'public', 'cards');
 
-if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-}
+fs.mkdirSync(outputDir, { recursive: true });
 
 const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 const suits = [
